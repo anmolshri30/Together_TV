@@ -1,6 +1,9 @@
 /* ==========================================================================
    WEBRTC SCREEN & AUDIO SHARING MODULE (DIRECT SOCKET.IO SIGNALING)
    Native WebRTC RTCPeerConnection for HD Low-Latency Screen & Audio Share
+   Fix #3: Track verification before createOffer
+   Fix #4: Reliable TURN server list with iceTransportPolicy
+   Fix #6: Cross-browser getDisplayMedia audio constraints (Chrome/Firefox/Safari)
    ========================================================================== */
 
 class WebRTCManager {
@@ -14,18 +17,26 @@ class WebRTCManager {
     this.videoElement = document.getElementById('remote-stream-video');
     this.placeholderEl = document.getElementById('screenshare-placeholder');
 
-    this.iceServers = {
+    // Fix #4: Expanded & reliable TURN + STUN list with iceTransportPolicy
+    this.iceConfig = {
+      iceTransportPolicy: 'all',
       iceServers: [
+        // Google STUN
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' },
+        // Cloudflare STUN (reliable)
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        // Twilio STUN
         { urls: 'stun:global.stun.twilio.com:3478' },
-        // TURN Relay Servers for NAT & Strict Firewall Traversal over Internet
+        // OpenRelay TURN — multiple ports for NAT/firewall traversal
         {
           urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:80?transport=tcp',
           username: 'openrelayproject',
           credential: 'openrelayproject'
         },
@@ -38,6 +49,12 @@ class WebRTCManager {
           urls: 'turn:openrelay.metered.ca:443?transport=tcp',
           username: 'openrelayproject',
           credential: 'openrelayproject'
+        },
+        // Backup TURN via numb.viagenie.ca (highly available)
+        {
+          urls: 'turn:numb.viagenie.ca',
+          username: 'webrtc@live.com',
+          credential: 'muazkh'
         }
       ]
     };
@@ -45,7 +62,7 @@ class WebRTCManager {
     this.initSocketSignaling();
   }
 
-  // Process queued candidates after remote description is set
+  // Process queued ICE candidates after setRemoteDescription completes
   async processIceCandidateQueue(targetSocketId, pc) {
     const queue = this.iceCandidatesQueue.get(targetSocketId);
     if (queue && queue.length > 0) {
@@ -58,6 +75,7 @@ class WebRTCManager {
           console.warn('[WebRTC Queued Candidate Error]', err);
         }
       }
+      this.iceCandidatesQueue.delete(targetSocketId);
     }
   }
 
@@ -65,7 +83,7 @@ class WebRTCManager {
   initSocketSignaling() {
     // Receive Offer from Host (Guest side)
     this.socket.on('webrtc-offer', async ({ senderSocketId, offer }) => {
-      console.log(`[WebRTC Direct] Received Offer from Host (${senderSocketId})`);
+      console.log(`[WebRTC] Received Offer from Host (${senderSocketId})`);
       const pc = this.createPeerConnection(senderSocketId);
 
       try {
@@ -86,7 +104,7 @@ class WebRTCManager {
 
     // Receive Answer from Guest (Host side)
     this.socket.on('webrtc-answer', async ({ senderSocketId, answer }) => {
-      console.log(`[WebRTC Direct] Received Answer from Guest (${senderSocketId})`);
+      console.log(`[WebRTC] Received Answer from Guest (${senderSocketId})`);
       const pc = this.peerConnections.get(senderSocketId);
       if (pc) {
         try {
@@ -98,15 +116,15 @@ class WebRTCManager {
       }
     });
 
-    // Guest Requests Stream (Host side)
+    // Guest Requests Stream (Host side) — triggered when guest joins an active share
     this.socket.on('guest-requested-stream', ({ guestSocketId }) => {
       if (this.isSharing && this.localStream) {
-        console.log(`[WebRTC Host] Guest ${guestSocketId} requested stream. Sending WebRTC offer...`);
+        console.log(`[WebRTC Host] Guest ${guestSocketId} requested stream. Initiating offer...`);
         this.connectToSingleUser(guestSocketId);
       }
     });
 
-    // Receive ICE Candidate
+    // Receive ICE Candidate — queue if remote description not yet set
     this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
       const pc = this.peerConnections.get(senderSocketId);
       if (candidate) {
@@ -117,7 +135,7 @@ class WebRTCManager {
             console.warn('[WebRTC Candidate Error]', err);
           }
         } else {
-          // Queue candidate until remote description is set
+          // Buffer candidates until remote description is set
           if (!this.iceCandidatesQueue.has(senderSocketId)) {
             this.iceCandidatesQueue.set(senderSocketId, []);
           }
@@ -133,10 +151,9 @@ class WebRTCManager {
       this.peerConnections.delete(targetSocketId);
     }
 
-    const pc = new RTCPeerConnection(this.iceServers);
+    const pc = new RTCPeerConnection(this.iceConfig);
     this.peerConnections.set(targetSocketId, pc);
 
-    // Send ICE candidates to target socket
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         this.socket.emit('webrtc-ice-candidate', {
@@ -146,27 +163,41 @@ class WebRTCManager {
       }
     };
 
-    // Receive remote tracks (Guest side)
+    // Receive remote video track (Guest side)
     pc.ontrack = (event) => {
-      console.log('[WebRTC Direct Track Received]', event.streams[0]);
+      console.log('[WebRTC Track Received]', event.streams[0]);
       if (event.streams && event.streams[0]) {
         this.attachStreamToVideo(event.streams[0], false);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC ICE State] ${targetSocketId}: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === 'failed') {
-        console.warn(`[WebRTC] Connection failed for ${targetSocketId}, attempting ICE restart...`);
+      const state = pc.iceConnectionState;
+      console.log(`[WebRTC ICE State] ${targetSocketId}: ${state}`);
+
+      if (state === 'failed') {
+        console.warn(`[WebRTC] ICE failed for ${targetSocketId} — attempting restartIce()`);
         if (typeof pc.restartIce === 'function') {
           pc.restartIce();
         }
-      } else if (pc.iceConnectionState === 'disconnected') {
-        console.warn(`[WebRTC] ICE Connection disconnected for ${targetSocketId}`);
+      } else if (state === 'disconnected') {
+        console.warn(`[WebRTC] ICE disconnected for ${targetSocketId} — waiting for recovery`);
+      } else if (state === 'connected' || state === 'completed') {
+        console.log(`[WebRTC] ✅ ICE connected for ${targetSocketId}`);
       }
     };
 
-    // If host has active stream, add local tracks
+    pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC Connection State] ${targetSocketId}: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed') {
+        this.clearVideo();
+        if (typeof showToast === 'function') {
+          showToast('⚠️ Stream connection lost. Host may need to restart screen share.');
+        }
+      }
+    };
+
+    // Attach local tracks if host is already sharing
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
         pc.addTrack(track, this.localStream);
@@ -176,68 +207,118 @@ class WebRTCManager {
     return pc;
   }
 
+  // Fix #6: Cross-browser safe getDisplayMedia with audio constraint fallback
+  async getDisplayMediaSafe() {
+    const isFirefox = navigator.userAgent.toLowerCase().includes('firefox');
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+    const videoConstraints = {
+      frameRate: { ideal: 30, max: 60 }
+    };
+
+    // Chrome/Edge: supports displaySurface
+    if (!isFirefox && !isSafari) {
+      videoConstraints.displaySurface = 'browser';
+    }
+
+    // Firefox/Safari: audio constraints as object cause NotSupportedError — use boolean
+    const audioConstraints = (isFirefox || isSafari) ? true : {
+      echoCancellation: true,
+      noiseSuppression: true,
+      sampleRate: 44100
+    };
+
+    // First attempt: with audio
+    try {
+      return await navigator.mediaDevices.getDisplayMedia({
+        video: videoConstraints,
+        audio: audioConstraints
+      });
+    } catch (audioErr) {
+      // If audio capture fails (some OS/browsers block tab audio), retry video-only
+      console.warn('[WebRTC] Audio capture failed, retrying video-only:', audioErr.message);
+      if (typeof showToast === 'function') {
+        showToast('🔇 Audio capture unavailable on this browser — sharing video only.');
+      }
+      return await navigator.mediaDevices.getDisplayMedia({
+        video: videoConstraints,
+        audio: false
+      });
+    }
+  }
+
   // Start Screen Share (Host Only)
   async startScreenShare(userList = []) {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
         if (typeof showToast === 'function') {
-          showToast('⚠️ Screen sharing requires HTTPS! Please access site via https://');
+          showToast('⚠️ Screen sharing requires HTTPS. Please access the site via https://');
         }
-        alert('WebRTC Screen Sharing is blocked on unencrypted HTTP connections across the internet. Please use HTTPS (e.g. https://yourdomain.com)');
         return false;
       }
 
-      console.log('[WebRTC Direct] Requesting getDisplayMedia with audio...');
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: 'browser',
-          frameRate: { ideal: 30, max: 60 }
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 44100
-        }
-      });
+      console.log('[WebRTC] Requesting getDisplayMedia...');
+      const stream = await this.getDisplayMediaSafe();
 
       this.localStream = stream;
       this.isSharing = true;
 
-      // Attach stream locally for Host (Muted to prevent audio echo)
+      // Attach locally — muted to prevent audio feedback echo on host side
       this.attachStreamToVideo(stream, true);
 
-      // Handle when host stops sharing via browser native bar
-      stream.getVideoTracks()[0].onended = () => {
-        console.log('[WebRTC] Host stopped screen sharing');
-        this.stopScreenShare();
-      };
+      // Handle native browser "Stop sharing" button
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          console.log('[WebRTC] Host stopped screen sharing (browser stop button)');
+          this.stopScreenShare();
+        };
+      }
+
+      // Fix #3: Verify tracks are attached before sending offers
+      const trackCount = stream.getTracks().length;
+      console.log(`[WebRTC] Stream ready with ${trackCount} tracks. Connecting to ${userList.length - 1} peer(s)...`);
 
       // Call all active users in room
-      userList.forEach((user) => {
+      for (const user of userList) {
         if (user.socketId !== this.socket.id) {
-          this.connectToSingleUser(user.socketId);
+          await this.connectToSingleUser(user.socketId);
         }
-      });
+      }
 
       this.socket.emit('screen-share-status', { isSharing: true });
       return true;
     } catch (err) {
-      console.error('[WebRTC] Screen Share Error / Cancelled:', err);
+      console.error('[WebRTC] Screen Share Error:', err);
       if (typeof showToast === 'function') {
-        showToast('⚠️ Screen Share cancelled or permission denied.');
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          showToast('⚠️ Screen share permission denied. Please allow screen access and try again.');
+        } else {
+          showToast(`⚠️ Screen share failed: ${err.message}`);
+        }
       }
       return false;
     }
   }
 
+  // Fix #3: Ensure tracks are verified before creating offer
   async connectToSingleUser(targetSocketId) {
     if (!this.localStream) return;
-    console.log(`[WebRTC Direct] Creating Offer for target user ${targetSocketId}...`);
 
+    const tracks = this.localStream.getTracks();
+    if (tracks.length === 0) {
+      console.warn(`[WebRTC] No tracks in localStream — skipping offer to ${targetSocketId}`);
+      return;
+    }
+
+    console.log(`[WebRTC] Creating offer for ${targetSocketId} (${tracks.length} tracks)...`);
     const pc = this.createPeerConnection(targetSocketId);
 
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveVideo: false,
+        offerToReceiveAudio: false
+      });
       await pc.setLocalDescription(offer);
 
       this.socket.emit('webrtc-offer', {
@@ -245,11 +326,11 @@ class WebRTCManager {
         offer: pc.localDescription
       });
     } catch (err) {
-      console.error('[WebRTC Offer Generation Error]', err);
+      console.error('[WebRTC] Offer Generation Error:', err);
     }
   }
 
-  // Stop Screen Share
+  // Stop Screen Share — clean up all peer connections
   stopScreenShare() {
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
@@ -266,29 +347,25 @@ class WebRTCManager {
     this.socket.emit('screen-share-status', { isSharing: false });
   }
 
-  // Attach Stream to Stage Video Element
+  // Attach stream to stage video element
   attachStreamToVideo(stream, isLocalStream = false) {
     if (this.videoElement) {
       this.videoElement.srcObject = stream;
       this.videoElement.style.display = 'block';
 
-      if (isLocalStream) {
-        // Host should always be muted locally to prevent feedback echo
-        this.videoElement.muted = true;
-      } else {
-        this.videoElement.muted = false;
-      }
+      // Host always muted locally to prevent audio feedback
+      this.videoElement.muted = isLocalStream ? true : false;
 
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
         playPromise.catch((err) => {
-          console.warn('[Autoplay Policy] Video play blocked, attempting muted playback:', err);
+          console.warn('[Autoplay Policy] Blocked — retrying muted:', err);
           this.videoElement.muted = true;
           this.videoElement.play().then(() => {
             if (typeof showToast === 'function' && !isLocalStream) {
-              showToast('🔊 Click anywhere on stage to unmute video audio!');
+              showToast('🔊 Click anywhere on stage to unmute audio!');
             }
-          }).catch(e => console.error('Video play failed:', e));
+          }).catch(e => console.error('[Video Play Failed]', e));
         });
       }
     }
@@ -298,10 +375,11 @@ class WebRTCManager {
     }
   }
 
-  // Clear Stage Video
+  // Clear stage video and show placeholder
   clearVideo() {
     if (this.videoElement) {
       this.videoElement.srcObject = null;
+      this.videoElement.style.display = 'none';
     }
 
     if (this.placeholderEl) {

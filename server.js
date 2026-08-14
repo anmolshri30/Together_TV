@@ -6,9 +6,13 @@ const cors = require('cors');
 const { ExpressPeerServer } = require('peer');
 
 const app = express();
+
+// Fix #2: Trust proxy so x-forwarded-proto HTTPS redirect works behind GoDaddy / Render / Nginx
+app.set('trust proxy', 1);
+
 app.use(cors());
 
-// Automatically redirect http:// to https:// on production deployments (Render / GoDaddy)
+// Automatically redirect http:// to https:// on production deployments
 app.use((req, res, next) => {
   if (req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'] !== 'https') {
     return res.redirect(301, `https://${req.headers.host}${req.url}`);
@@ -20,7 +24,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 
-// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains (Render Reverse Proxy compatible)
+// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains
 const peerServer = ExpressPeerServer(server, {
   debug: true,
   path: '/peerapp',
@@ -29,11 +33,16 @@ const peerServer = ExpressPeerServer(server, {
 });
 app.use('/peerjs', peerServer);
 
+// Fix #2: Add pingTimeout, pingInterval, allowEIO3 for reverse proxy & legacy client compatibility
 const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST']
-  }
+  },
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 
 // Store rooms in memory
@@ -49,7 +58,12 @@ function generateRoomCode() {
 }
 
 io.on('connection', (socket) => {
-  console.log(`[Socket Connected] ID: ${socket.id}`);
+  console.log(`[Socket Connected] ID: ${socket.id} | Transport: ${socket.conn.transport.name}`);
+
+  // Log transport upgrades (polling -> websocket)
+  socket.conn.on('upgrade', (transport) => {
+    console.log(`[Socket Upgraded] ID: ${socket.id} -> ${transport.name}`);
+  });
 
   // Create Room (Host)
   socket.on('create-room', ({ username }) => {
@@ -66,7 +80,7 @@ io.on('connection', (socket) => {
       hostSocketId: socket.id,
       hostPeerId: null,
       currentUrl: 'https://www.youtube.com/embed/aqz-KE-bpKQ?enablejsapi=1',
-      mode: 'screenshare', // 'screenshare' | 'youtube' | 'web'
+      mode: 'screenshare',
       isPlaying: false,
       currentTime: 0,
       lightsDimmed: false,
@@ -119,7 +133,6 @@ io.on('connection', (socket) => {
 
     const userList = Array.from(room.users.values());
 
-    // Send state to joined user
     socket.emit('room-joined', {
       roomCode: code,
       isHost: false,
@@ -137,13 +150,56 @@ io.on('connection', (socket) => {
       }
     });
 
-    // Notify others in room
     socket.to(code).emit('user-joined', {
       user,
       users: userList
     });
 
     console.log(`[User Joined] ${user.username} joined room ${code}`);
+  });
+
+  // Fix #8: Handle room rejoin after socket reconnect
+  socket.on('rejoin-room', ({ roomCode, username }) => {
+    const code = (roomCode || '').trim().toUpperCase();
+    const room = rooms.get(code);
+
+    if (!room) {
+      socket.emit('rejoin-error', { message: 'Room no longer exists.' });
+      return;
+    }
+
+    const user = {
+      socketId: socket.id,
+      username: username || 'Reconnected Guest 🎟️',
+      isHost: false,
+      peerId: null
+    };
+
+    room.users.set(socket.id, user);
+    socket.join(code);
+    socket.roomCode = code;
+
+    const userList = Array.from(room.users.values());
+
+    socket.emit('room-joined', {
+      roomCode: code,
+      isHost: false,
+      user,
+      hostSocketId: room.hostSocketId,
+      hostPeerId: room.hostPeerId,
+      roomState: {
+        currentUrl: room.currentUrl,
+        mode: room.mode,
+        isPlaying: room.isPlaying,
+        currentTime: room.currentTime,
+        lightsDimmed: room.lightsDimmed,
+        isScreenSharing: room.isScreenSharing,
+        users: userList
+      }
+    });
+
+    socket.to(code).emit('user-joined', { user, users: userList });
+    console.log(`[Rejoin] ${user.username} rejoined room ${code}`);
   });
 
   // Register Peer ID for WebRTC
@@ -161,7 +217,6 @@ io.on('connection', (socket) => {
       }
     }
 
-    // Broadcast updated peer info to room
     io.to(code).emit('peer-registered', {
       socketId: socket.id,
       peerId,
@@ -220,13 +275,17 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Guest Requests Stream directly from Host
+  // Fix #7: Guest Requests Stream directly from Host (with server-side roomCode guard)
   socket.on('request-host-stream', () => {
     const code = socket.roomCode;
-    if (!code) return;
+    if (!code) {
+      console.warn(`[request-host-stream] Socket ${socket.id} has no roomCode yet — ignoring`);
+      return;
+    }
     const room = rooms.get(code);
     if (!room || !room.hostSocketId) return;
 
+    console.log(`[request-host-stream] Guest ${socket.id} requesting stream from host ${room.hostSocketId}`);
     io.to(room.hostSocketId).emit('guest-requested-stream', {
       guestSocketId: socket.id
     });
@@ -237,7 +296,7 @@ io.on('connection', (socket) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
-    if (!room || room.hostSocketId !== socket.id) return; // Only Host can trigger playback sync!
+    if (!room || room.hostSocketId !== socket.id) return;
 
     if (action === 'play') room.isPlaying = true;
     if (action === 'pause') room.isPlaying = false;
@@ -318,8 +377,8 @@ io.on('connection', (socket) => {
   });
 
   // Disconnect
-  socket.on('disconnect', () => {
-    console.log(`[Socket Disconnected] ID: ${socket.id}`);
+  socket.on('disconnect', (reason) => {
+    console.log(`[Socket Disconnected] ID: ${socket.id} | Reason: ${reason}`);
     const code = socket.roomCode;
     if (!code) return;
 
@@ -334,6 +393,8 @@ io.on('connection', (socket) => {
       console.log(`[Room Closed] ${code} deleted (empty)`);
     } else {
       if (room.hostSocketId === socket.id) {
+        // Host left — promote next user
+        room.isScreenSharing = false;
         const nextSocketId = room.users.keys().next().value;
         const newHost = room.users.get(nextSocketId);
         if (newHost) {
@@ -362,6 +423,7 @@ server.listen(PORT, () => {
   Local Server: http://localhost:${PORT}
   PeerServer WebRTC: /peerjs mounted natively
   Room Signaling: Socket.io Enabled
+  Trust Proxy: ON | EIO3 Compat: ON
   ======================================================
   `);
 });
