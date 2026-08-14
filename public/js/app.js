@@ -177,8 +177,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Peer Registered
-  socket.on('peer-registered', ({ users }) => {
+  socket.on('peer-registered', ({ users, socketId, peerId }) => {
     updateAudienceList(users);
+    // If I am Host and currently screen sharing, call the newly registered peer!
+    if (isHost && webrtc.isSharing && socketId !== socket.id && peerId) {
+      console.log(`[Host] Calling newly registered guest peer: ${peerId}`);
+      webrtc.callSinglePeer(peerId);
+    }
   });
 
   // Screen Share Status Update

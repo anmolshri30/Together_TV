@@ -152,8 +152,21 @@ class WebRTCManager {
   attachStreamToVideo(stream) {
     if (this.videoElement) {
       this.videoElement.srcObject = stream;
-      this.videoElement.play().catch(e => console.warn('Autoplay check:', e));
       this.videoElement.style.display = 'block';
+
+      // Try playing with sound first
+      const playPromise = this.videoElement.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[Autoplay Policy] Video play blocked with sound, attempting muted playback:', err);
+          this.videoElement.muted = true;
+          this.videoElement.play().then(() => {
+            if (typeof showToast === 'function') {
+              showToast('🔊 Click anywhere on stage to unmute video audio!');
+            }
+          }).catch(e => console.error('Video play failed:', e));
+        });
+      }
     }
 
     if (this.placeholderEl) {
