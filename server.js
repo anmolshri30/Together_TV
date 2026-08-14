@@ -3,12 +3,21 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const cors = require('cors');
+const { ExpressPeerServer } = require('peer');
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
+
+// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains
+const peerServer = ExpressPeerServer(server, {
+  debug: true,
+  path: '/peerapp'
+});
+app.use('/peerjs', peerServer);
+
 const io = new Server(server, {
   cors: {
     origin: '*',
@@ -17,7 +26,6 @@ const io = new Server(server, {
 });
 
 // Store rooms in memory
-// roomCode -> { hostSocketId, hostPeerId, roomCode, currentUrl, mode, isPlaying, currentTime, lightsDimmed, users: Map(socketId -> { username, isHost, peerId }) }
 const rooms = new Map();
 
 function generateRoomCode() {
@@ -46,7 +54,7 @@ io.on('connection', (socket) => {
       roomCode,
       hostSocketId: socket.id,
       hostPeerId: null,
-      currentUrl: 'https://www.youtube.com/embed/dQw4w9WgXcQ?enablejsapi=1',
+      currentUrl: 'https://www.youtube.com/embed/aqz-KE-bpKQ?enablejsapi=1',
       mode: 'screenshare', // 'screenshare' | 'youtube' | 'web'
       isPlaying: false,
       currentTime: 0,
@@ -65,6 +73,8 @@ io.on('connection', (socket) => {
       roomState: {
         currentUrl: room.currentUrl,
         mode: room.mode,
+        isPlaying: room.isPlaying,
+        currentTime: room.currentTime,
         lightsDimmed: room.lightsDimmed,
         users: Array.from(room.users.values())
       }
@@ -146,14 +156,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Signaling fallback (for manual WebRTC exchange if PeerJS server is offline)
-  socket.on('webrtc-signal', ({ targetSocketId, signalData }) => {
-    io.to(targetSocketId).emit('webrtc-signal', {
-      senderSocketId: socket.id,
-      signalData
-    });
-  });
-
   // Host Screen Sharing State
   socket.on('screen-share-status', ({ isSharing }) => {
     const code = socket.roomCode;
@@ -186,7 +188,7 @@ io.on('connection', (socket) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
-    if (!room || room.hostSocketId !== socket.id) return;
+    if (!room) return;
 
     if (action === 'play') room.isPlaying = true;
     if (action === 'pause') room.isPlaying = false;
@@ -194,7 +196,8 @@ io.on('connection', (socket) => {
 
     socket.to(code).emit('sync-playback', {
       action,
-      time: room.currentTime
+      time: room.currentTime,
+      senderSocketId: socket.id
     });
   });
 
@@ -223,7 +226,7 @@ io.on('connection', (socket) => {
       emoji,
       username,
       id: Math.random().toString(36).substring(2, 9),
-      xPos: Math.random() * 80 + 10 // 10% to 90% horizontal position
+      xPos: Math.random() * 80 + 10
     });
   });
 
@@ -264,7 +267,6 @@ io.on('connection', (socket) => {
       rooms.delete(code);
       console.log(`[Room Closed] ${code} deleted (empty)`);
     } else {
-      // If host left, assign new host or notify
       if (room.hostSocketId === socket.id) {
         const nextSocketId = room.users.keys().next().value;
         const newHost = room.users.get(nextSocketId);
@@ -292,8 +294,8 @@ server.listen(PORT, () => {
   🍿 CINE-PARTY WATCH PARTY & SHARED BROWSER IS RUNNING! 🎬
   ======================================================
   Local Server: http://localhost:${PORT}
+  PeerServer WebRTC: /peerjs mounted natively
   Room Signaling: Socket.io Enabled
-  Theatre Theme: Fun Cinema & Interactive Floating Emoji
   ======================================================
   `);
 });

@@ -16,22 +16,41 @@ class WebRTCManager {
     this.placeholderEl = document.getElementById('screenshare-placeholder');
   }
 
-  // Initialize PeerJS Client
+  // Initialize PeerJS Client connected directly to our server's native /peerjs endpoint
   initPeer() {
     return new Promise((resolve, reject) => {
-      // Create random peer ID or use PeerJS auto-id
+      const isHttps = window.location.protocol === 'https:';
+      const host = window.location.hostname;
+      let port = window.location.port;
+
+      if (!port) {
+        port = isHttps ? 443 : 80;
+      } else {
+        port = parseInt(port, 10);
+      }
+
+      console.log(`[PeerJS Config] Host: ${host}, Port: ${port}, Secure: ${isHttps}`);
+
       this.peer = new Peer(undefined, {
+        host: host,
+        port: port,
+        path: '/peerjs/peerapp',
+        secure: isHttps,
         debug: 1,
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
           ]
         }
       });
 
       this.peer.on('open', (id) => {
-        console.log(`[PeerJS Initialized] ID: ${id}`);
+        console.log(`[PeerJS Initialized Native] ID: ${id}`);
         this.peerId = id;
         this.socket.emit('register-peer', { peerId: id });
         resolve(id);
@@ -69,7 +88,7 @@ class WebRTCManager {
       console.log('[WebRTC] Requesting getDisplayMedia with audio...');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          displaySurface: 'browser', // default to tab/browser window
+          displaySurface: 'browser',
           frameRate: { ideal: 30, max: 60 }
         },
         audio: {
