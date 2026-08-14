@@ -1,0 +1,1362 @@
+/* ==========================================================================
+   CINE-PARTY THEATRE & SHARED BROWSER STYLESHEET
+   Unique Theatre Aesthetics, Marquee Bulbs, Red Velvet Curtains & Micro-Animations
+   ========================================================================== */
+
+:root {
+  --bg-dark: #0a0305;
+  --bg-card: rgba(30, 8, 14, 0.75);
+  --bg-card-border: rgba(255, 42, 85, 0.25);
+  
+  --velvet-red: #800c19;
+  --velvet-bright: #b81427;
+  --neon-red: #ff2a55;
+  --neon-pink: #ff007f;
+  
+  --gold-main: #ffd700;
+  --gold-glow: rgba(255, 215, 0, 0.4);
+  --gold-dark: #ccac00;
+
+  --chrome-bg: #1e1e24;
+  --chrome-tab-active: #2a2a35;
+  --chrome-url-bg: #121217;
+  --chrome-border: #333342;
+
+  --text-main: #ffffff;
+  --text-muted: #b8a2aa;
+  --text-gold: #ffe680;
+
+  --font-heading: 'Outfit', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --radius-lg: 16px;
+  --radius-md: 10px;
+  --radius-sm: 6px;
+
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body.theatre-theme {
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 50% 10%, rgba(128, 12, 25, 0.35) 0%, transparent 60%),
+    radial-gradient(circle at 10% 90%, rgba(255, 42, 85, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 90% 90%, rgba(255, 215, 0, 0.1) 0%, transparent 50%);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  min-height: 100vh;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* ==================== RED VELVET CURTAIN TRANSITION ==================== */
+.curtain-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 9999;
+  pointer-events: none;
+  display: flex;
+  overflow: hidden;
+}
+
+.curtain-left, .curtain-right {
+  width: 50vw;
+  height: 100vh;
+  background: linear-gradient(90deg, 
+    #3b0207 0%, 
+    #7a0a16 20%, 
+    #4a040b 40%, 
+    #9e0e1e 60%, 
+    #57050d 80%, 
+    #240104 100%);
+  box-shadow: inset 0 0 50px rgba(0,0,0,0.8);
+  transition: transform 1.2s cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+.curtain-left {
+  transform: translateX(-100%);
+}
+
+.curtain-right {
+  transform: translateX(100%);
+}
+
+.curtain-overlay.closed .curtain-left {
+  transform: translateX(0);
+}
+
+.curtain-overlay.closed .curtain-right {
+  transform: translateX(0);
+}
+
+.curtain-overlay.closed {
+  pointer-events: auto;
+}
+
+.curtain-title {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.4s ease 0.6s;
+  color: var(--gold-main);
+}
+
+.curtain-overlay.closed .curtain-title {
+  opacity: 1;
+}
+
+.curtain-title h2 {
+  font-family: var(--font-heading);
+  font-size: 2.5rem;
+  letter-spacing: 2px;
+  text-shadow: 0 0 20px var(--gold-glow);
+}
+
+.curtain-title p {
+  color: #fff;
+  font-size: 1.1rem;
+  margin-top: 8px;
+}
+
+/* ==================== STAGE LIGHT BEAMS ==================== */
+.light-beams {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.beam {
+  position: absolute;
+  top: -20%;
+  width: 300px;
+  height: 140%;
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.08) 0%, rgba(255, 42, 85, 0.03) 50%, transparent 100%);
+  filter: blur(20px);
+  transform-origin: top center;
+  animation: beamSway 10s infinite ease-in-out alternate;
+}
+
+.beam-left {
+  left: 10%;
+  transform: rotate(-25deg);
+}
+
+.beam-right {
+  right: 10%;
+  transform: rotate(25deg);
+  animation-delay: -5s;
+}
+
+@keyframes beamSway {
+  0% { transform: rotate(-25deg) scaleX(1); }
+  100% { transform: rotate(-15deg) scaleX(1.3); }
+}
+
+/* ==================== APP CONTAINER & VIEWS ==================== */
+.app-container {
+  position: relative;
+  z-index: 2;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-panel {
+  display: none;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  width: 100%;
+  height: 100%;
+}
+
+.view-panel.active {
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ==================== 1. HOME VIEW (THEATRE LOBBY) ==================== */
+#view-home {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 40px 20px;
+  justify-content: center;
+}
+
+.lobby-header {
+  text-align: center;
+  margin-bottom: 35px;
+}
+
+/* Marquee Sign */
+.marquee-sign {
+  display: inline-block;
+  background: linear-gradient(145deg, #2b060b, #150305);
+  border: 4px solid var(--gold-main);
+  border-radius: 20px;
+  padding: 20px 40px;
+  box-shadow: 
+    0 0 30px var(--gold-glow),
+    0 10px 40px rgba(0, 0, 0, 0.8),
+    inset 0 0 15px rgba(255, 215, 0, 0.2);
+  position: relative;
+}
+
+.bulb-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0;
+}
+
+.bulb {
+  width: 10px;
+  height: 10px;
+  background-color: var(--gold-main);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--gold-main);
+  animation: bulbPulse 1.5s infinite alternate;
+}
+
+.bulb:nth-child(even) {
+  animation-delay: 0.75s;
+  background-color: var(--neon-red);
+  box-shadow: 0 0 10px var(--neon-red);
+}
+
+@keyframes bulbPulse {
+  0% { opacity: 0.4; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1.2); }
+}
+
+.logo-title {
+  font-family: var(--font-heading);
+  font-size: 3.2rem;
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: #fff;
+  text-transform: uppercase;
+  text-shadow: 0 0 15px var(--neon-red);
+  margin: 10px 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+}
+
+.badge-live {
+  font-size: 0.9rem;
+  background: var(--neon-red);
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 50px;
+  box-shadow: 0 0 15px var(--neon-red);
+  animation: liveBlink 1.5s infinite ease-in-out;
+}
+
+@keyframes liveBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.logo-subtitle {
+  color: var(--text-gold);
+  font-size: 1.1rem;
+  letter-spacing: 1px;
+}
+
+/* User Profile Setup Card */
+.user-profile-card {
+  background: var(--bg-card);
+  border: 1px solid var(--bg-card-border);
+  backdrop-filter: blur(12px);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 30px;
+  text-align: center;
+}
+
+.profile-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-gold);
+  font-size: 1rem;
+}
+
+.profile-input-group {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.4);
+  border: 2px solid rgba(255, 215, 0, 0.3);
+  border-radius: 50px;
+  padding: 6px 18px;
+  transition: var(--transition-fast);
+}
+
+.profile-input-group:focus-within {
+  border-color: var(--gold-main);
+  box-shadow: 0 0 15px var(--gold-glow);
+}
+
+.avatar-icon {
+  font-size: 1.6rem;
+  margin-right: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.2s ease;
+}
+
+.avatar-icon:hover {
+  transform: scale(1.2) rotate(10deg);
+}
+
+.profile-input-group input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 1.1rem;
+  font-family: var(--font-body);
+  font-weight: 600;
+  width: 260px;
+}
+
+/* Lobby Ticket Cards Grid */
+.lobby-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 25px;
+  margin-bottom: 40px;
+}
+
+.ticket-card {
+  background: var(--bg-card);
+  border: 2px dashed var(--bg-card-border);
+  border-radius: var(--radius-lg);
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+  overflow: hidden;
+  transition: var(--transition-smooth);
+}
+
+.ticket-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--gold-main);
+  box-shadow: 0 15px 35px rgba(255, 42, 85, 0.25);
+}
+
+.ticket-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.ticket-stub {
+  font-family: var(--font-heading);
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--gold-main);
+  background: rgba(255, 215, 0, 0.1);
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+.ticket-icon {
+  font-size: 2.2rem;
+}
+
+.ticket-body h3 {
+  font-family: var(--font-heading);
+  font-size: 1.8rem;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.ticket-body p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.ticket-features {
+  list-style: none;
+  margin-bottom: 25px;
+}
+
+.ticket-features li {
+  font-size: 0.9rem;
+  color: #e0d0d5;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ticket-features .check {
+  color: var(--gold-main);
+  font-weight: bold;
+}
+
+.code-input-group {
+  margin-top: 15px;
+  text-align: left;
+}
+
+.code-input-group label {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--text-gold);
+  margin-bottom: 6px;
+
+}
+
+.code-input-group input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid var(--chrome-border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  color: var(--gold-main);
+  font-size: 1.2rem;
+  font-family: monospace;
+  letter-spacing: 2px;
+  font-weight: bold;
+  outline: none;
+  transition: var(--transition-fast);
+}
+
+.code-input-group input:focus {
+  border-color: var(--neon-red);
+  box-shadow: 0 0 12px rgba(255, 42, 85, 0.4);
+}
+
+/* Theatre Buttons */
+.btn-theatre {
+  width: 100%;
+  padding: 14px 24px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-heading);
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: var(--transition-fast);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.btn-gold {
+  background: linear-gradient(135deg, var(--gold-main) 0%, var(--gold-dark) 100%);
+  color: #1a0507;
+}
+
+.btn-gold:hover {
+  background: linear-gradient(135deg, #ffe033 0%, var(--gold-main) 100%);
+  transform: scale(1.02);
+  box-shadow: 0 0 25px var(--gold-glow);
+}
+
+.btn-red {
+  background: linear-gradient(135deg, var(--neon-red) 0%, var(--velvet-red) 100%);
+  color: #fff;
+}
+
+.btn-red:hover {
+  background: linear-gradient(135deg, #ff4d73 0%, var(--neon-red) 100%);
+  transform: scale(1.02);
+  box-shadow: 0 0 25px rgba(255, 42, 85, 0.5);
+}
+
+/* Feature Strip */
+.how-it-works {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  text-align: center;
+  background: rgba(18, 4, 8, 0.6);
+  border: 1px solid rgba(255, 215, 0, 0.15);
+  border-radius: var(--radius-lg);
+  padding: 25px;
+}
+
+.feature-item .feature-emoji {
+  font-size: 2.2rem;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.feature-item h4 {
+  font-family: var(--font-heading);
+  color: var(--text-gold);
+  margin-bottom: 6px;
+}
+
+.feature-item p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+/* ==================== 2. ROOM VIEW (CINEMA STAGE) ==================== */
+#view-room {
+  height: 100vh;
+  padding: 15px 20px;
+  gap: 15px;
+}
+
+/* Top Marquee Header */
+.room-marquee-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--bg-card-border);
+  border-radius: var(--radius-md);
+  padding: 10px 20px;
+  backdrop-filter: blur(10px);
+}
+
+.marquee-left, .marquee-right {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.room-title-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: 1.2rem;
+  color: #fff;
+}
+
+.ticket-code-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--gold-main);
+  padding: 6px 14px;
+  border-radius: 50px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.ticket-code-pill:hover {
+  box-shadow: 0 0 12px var(--gold-glow);
+}
+
+.ticket-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+
+#display-room-code {
+  color: var(--gold-main);
+  font-family: monospace;
+  font-size: 1.1rem;
+  letter-spacing: 1px;
+}
+
+.btn-copy-sm {
+  background: var(--gold-main);
+  color: #000;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.role-badge {
+  padding: 5px 12px;
+  border-radius: 50px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.host-badge {
+  background: rgba(255, 215, 0, 0.15);
+  border: 1px solid var(--gold-main);
+  color: var(--gold-main);
+}
+
+.guest-badge {
+  background: rgba(255, 42, 85, 0.15);
+  border: 1px solid var(--neon-red);
+  color: var(--neon-red);
+}
+
+.btn-pill-action {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 50px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition-fast);
+}
+
+.btn-pill-action:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.btn-danger:hover {
+  background: var(--velvet-bright);
+  border-color: var(--neon-red);
+}
+
+/* Stage Container Grid */
+.stage-container {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 15px;
+  flex: 1;
+  min-height: 0; /* flex child scroll overflow fix */
+}
+
+/* ==================== CHROME BROWSER STAGE WINDOW ==================== */
+.chrome-window-wrapper {
+  background: var(--chrome-bg);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.8);
+  position: relative;
+}
+
+/* Chrome Header & Tabs */
+.chrome-header {
+  background: #141419;
+  border-bottom: 1px solid var(--chrome-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.chrome-tabs-bar {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px 0;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.chrome-tab {
+  background: #1e1e26;
+  border: 1px solid var(--chrome-border);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  user-select: none;
+  transition: var(--transition-fast);
+}
+
+.chrome-tab:hover {
+  background: #252530;
+  color: #fff;
+}
+
+.chrome-tab.active {
+  background: var(--chrome-tab-active);
+  color: #fff;
+  border-color: var(--neon-red);
+  border-bottom: 2px solid var(--neon-red);
+  font-weight: 600;
+}
+
+.tab-host-indicator {
+  background: var(--neon-red);
+  color: #fff;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.chrome-new-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.2rem;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.chrome-new-tab-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+/* Chrome Address Bar */
+.chrome-address-bar-wrapper {
+  display: flex;
+  align-items: center;
+  background: var(--chrome-tab-active);
+  padding: 8px 14px;
+  gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.nav-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+.chrome-url-box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  background: var(--chrome-url-bg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 50px;
+  padding: 6px 14px;
+  gap: 8px;
+}
+
+.chrome-url-box:focus-within {
+  border-color: var(--gold-main);
+  box-shadow: 0 0 10px var(--gold-glow);
+}
+
+.lock-icon {
+  font-size: 0.85rem;
+  color: #4cd964;
+}
+
+.chrome-url-box input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 0.9rem;
+  font-family: var(--font-body);
+}
+
+.btn-go-url {
+  background: var(--neon-red);
+  color: #fff;
+  border: none;
+  border-radius: 50px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.btn-go-url:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 10px var(--neon-red);
+}
+
+.address-bar-host-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-gold);
+  background: rgba(0,0,0,0.3);
+  padding: 4px 10px;
+  border-radius: 50px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.green {
+  background: #4cd964;
+  box-shadow: 0 0 8px #4cd964;
+}
+
+/* Chrome Bookmarks Bar */
+.chrome-bookmarks-bar {
+  display: flex;
+  align-items: center;
+  background: #181820;
+  padding: 6px 14px;
+  gap: 8px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+}
+
+.bookmarks-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-right: 4px;
+}
+
+.bookmark-pill {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #d1d1e0;
+  padding: 4px 10px;
+  border-radius: 50px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  transition: var(--transition-fast);
+}
+
+.bookmark-pill:hover {
+  background: rgba(255, 215, 0, 0.15);
+  border-color: var(--gold-main);
+  color: var(--gold-main);
+}
+
+/* ==================== VIEWPORT (THE CINEMA STAGE) ==================== */
+.chrome-viewport {
+  flex: 1;
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Stage View Panels */
+.stage-view-panel {
+  width: 100%;
+  height: 100%;
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.stage-view-panel.active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* Stage Placeholder Overlay */
+.stage-placeholder {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle at center, #240810 0%, #080204 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 30px;
+  z-index: 5;
+}
+
+.placeholder-card {
+  max-width: 480px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 215, 0, 0.2);
+  border-radius: var(--radius-lg);
+  padding: 35px;
+  backdrop-filter: blur(10px);
+}
+
+.placeholder-icon-bounce {
+  font-size: 3.5rem;
+  margin-bottom: 15px;
+  animation: bounceSlow 2s infinite ease-in-out;
+}
+
+@keyframes bounceSlow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.placeholder-card h3 {
+  font-family: var(--font-heading);
+  font-size: 1.8rem;
+  color: var(--gold-main);
+  margin-bottom: 10px;
+}
+
+.placeholder-card p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 25px;
+}
+
+.cta-hint {
+  font-size: 0.8rem;
+  color: var(--text-gold);
+  margin-top: 12px;
+}
+
+.pulse-waiting-ring {
+  width: 50px;
+  height: 50px;
+  border: 4px solid var(--neon-red);
+  border-top-color: transparent;
+  border-radius: 50%;
+  margin: 0 auto 15px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* YouTube Wrapper */
+.youtube-player-wrapper, .web-iframe-wrapper {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.youtube-player-wrapper iframe, .web-iframe-wrapper iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.iframe-notice {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 42, 85, 0.9);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 50px;
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+/* Floating Reactions Overlay Layer */
+.reactions-overlay-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 20;
+  overflow: hidden;
+}
+
+.floating-emoji {
+  position: absolute;
+  bottom: -40px;
+  font-size: 2.8rem;
+  user-select: none;
+  animation: floatUp 3s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.6));
+}
+
+@keyframes floatUp {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(0.6) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-50vh) scale(1.4) rotate(15deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-105vh) scale(1) rotate(-15deg);
+  }
+}
+
+/* Host Floating Control Deck */
+.host-stage-controls {
+  background: rgba(18, 18, 24, 0.9);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--chrome-border);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-deck {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: var(--transition-fast);
+}
+
+.btn-deck:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.btn-deck-gold {
+  background: var(--gold-main);
+  color: #000;
+  border: none;
+  font-weight: bold;
+}
+
+.btn-deck-gold:hover {
+  background: #ffe033;
+  box-shadow: 0 0 15px var(--gold-glow);
+}
+
+.media-sync-group {
+  flex: 1;
+  max-width: 400px;
+}
+
+.seek-bar-wrapper {
+  flex: 1;
+}
+
+.seek-bar-wrapper input[type="range"] {
+  width: 100%;
+  accent-color: var(--neon-red);
+  cursor: pointer;
+}
+
+/* ==================== RIGHT SIDEBAR (CHAT & AUDIENCE) ==================== */
+.theatre-sidebar {
+  background: var(--bg-card);
+  border: 1px solid var(--bg-card-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+
+.sidebar-tabs {
+  display: flex;
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid var(--bg-card-border);
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-heading);
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.sidebar-tab.active {
+  color: var(--gold-main);
+  border-bottom: 2px solid var(--gold-main);
+  background: rgba(255, 215, 0, 0.05);
+}
+
+.sidebar-panel {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar-panel.active {
+  display: flex;
+}
+
+/* Interactive Emoji Deck */
+.interactive-emoji-bar {
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.emoji-bar-title {
+  font-size: 0.75rem;
+  color: var(--text-gold);
+  margin-bottom: 8px;
+  font-weight: bold;
+}
+
+.emoji-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.btn-emoji-react {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  font-size: 1.4rem;
+  padding: 6px;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.btn-emoji-react:hover {
+  transform: scale(1.25);
+  background: rgba(255, 215, 0, 0.2);
+  border-color: var(--gold-main);
+}
+
+.btn-emoji-react:active {
+  transform: scale(0.95);
+}
+
+/* Chat Messages */
+.chat-messages-container {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-system-msg {
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid rgba(255, 215, 0, 0.2);
+  color: var(--text-gold);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.chat-bubble {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 0.88rem;
+  max-width: 90%;
+  word-wrap: break-word;
+}
+
+.chat-bubble.host-bubble {
+  border-left: 3px solid var(--gold-main);
+  background: rgba(255, 215, 0, 0.06);
+}
+
+.chat-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.chat-sender {
+  font-weight: bold;
+  color: var(--gold-main);
+}
+
+.chat-time {
+  font-size: 0.7rem;
+}
+
+.chat-text {
+  color: #fff;
+}
+
+/* Chat Input Form */
+.chat-input-form {
+  padding: 10px;
+  background: rgba(0,0,0,0.4);
+  border-top: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  gap: 8px;
+}
+
+.chat-input-form input {
+  flex: 1;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 50px;
+  padding: 8px 14px;
+  color: #fff;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.chat-input-form input:focus {
+  border-color: var(--neon-red);
+}
+
+.btn-send-chat {
+  background: var(--neon-red);
+  color: #fff;
+  border: none;
+  border-radius: 50px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* Audience List */
+.audience-header {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.audience-list-ul {
+  list-style: none;
+  padding: 10px;
+}
+
+.audience-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.04);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+}
+
+/* Dim Stage Lights Effect */
+body.lights-dimmed {
+  background: #000;
+}
+
+body.lights-dimmed .room-marquee-header,
+body.lights-dimmed .theatre-sidebar,
+body.lights-dimmed .light-beams {
+  opacity: 0.15;
+  transition: opacity 0.4s ease;
+}
+
+body.lights-dimmed .chrome-window-wrapper {
+  box-shadow: 0 0 60px rgba(255, 42, 85, 0.7);
+}
+
+/* Notifications Toast */
+.toast-container {
+  position: fixed;
+  bottom: 25px;
+  left: 25px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toast {
+  background: rgba(20, 5, 10, 0.95);
+  border: 1px solid var(--gold-main);
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.8);
+  animation: slideToast 0.3s ease forwards;
+}
+
+@keyframes slideToast {
+  0% { opacity: 0; transform: translateX(-30px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+/* Responsive Breakdown */
+@media (max-width: 900px) {
+  .lobby-cards-grid {
+    grid-template-columns: 1fr;
+  }
+  .stage-container {
+    grid-template-columns: 1fr;
+  }
+  .theatre-sidebar {
+    height: 300px;
+  }
+}

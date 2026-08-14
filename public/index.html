@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CINE-PARTY 🍿 Shared Browser & Watch Party Theatre</title>
+
+  <!-- Google Fonts: Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;700;800;900&display=swap" rel="stylesheet">
+
+  <!-- Socket.io & PeerJS Client Libraries -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="theatre-theme">
+
+  <!-- Red Velvet Curtain Transition Overlay -->
+  <div id="curtain-overlay" class="curtain-overlay">
+    <div class="curtain-left"></div>
+    <div class="curtain-right"></div>
+    <div class="curtain-title">
+      <div class="marquee-lights">
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <h2>ENTERING THEATRE...</h2>
+      <p id="curtain-room-name">Preparing your VIP seat 🍿</p>
+    </div>
+  </div>
+
+  <!-- Stage Light Beams Background -->
+  <div class="light-beams">
+    <div class="beam beam-left"></div>
+    <div class="beam beam-right"></div>
+  </div>
+
+  <!-- Main App Container -->
+  <div id="app" class="app-container">
+
+    <!-- ==================== 1. HOME VIEW (THEATRE LOBBY) ==================== -->
+    <div id="view-home" class="view-panel active">
+      <header class="lobby-header">
+        <div class="marquee-sign">
+          <div class="bulb-row top-bulbs">
+            <span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span>
+          </div>
+          <h1 class="logo-title">CINE-PARTY <span class="badge-live">LIVE 🎬</span></h1>
+          <p class="logo-subtitle">Real-Time Shared Browser & Watch Party Theatre</p>
+          <div class="bulb-row bottom-bulbs">
+            <span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span><span class="bulb"></span>
+          </div>
+        </div>
+      </header>
+
+      <main class="lobby-content">
+        <!-- Display Name & Avatar Setup -->
+        <div class="user-profile-card">
+          <label for="username-input" class="profile-label">Choose Your Theatre Persona:</label>
+          <div class="profile-input-group">
+            <span class="avatar-icon" id="profile-avatar-display">🎬</span>
+            <input type="text" id="username-input" placeholder="Enter your name (e.g. Cinema Boss)" maxlength="20">
+          </div>
+        </div>
+
+        <!-- Action Cards: Create vs Join -->
+        <div class="lobby-cards-grid">
+          <!-- Create Room Card -->
+          <div class="ticket-card create-card">
+            <div class="ticket-header">
+              <span class="ticket-stub">VIP HOST TICKET</span>
+              <span class="ticket-icon">🍿</span>
+            </div>
+            <div class="ticket-body">
+              <h3>Create a Room</h3>
+              <p>Start a new theatre room, share web browser pages, YouTube videos, or screen audio/video live with friends.</p>
+              <ul class="ticket-features">
+                <li><span class="check">✓</span> Instant Room Code</li>
+                <li><span class="check">✓</span> Chrome Browser Window</li>
+                <li><span class="check">✓</span> HD Screen & Audio Share</li>
+                <li><span class="check">✓</span> Full Host Controls</li>
+              </ul>
+            </div>
+            <div class="ticket-footer">
+              <button id="btn-create-room" class="btn-theatre btn-gold">
+                <span class="btn-sparkle">✨</span> Create Theatre Room
+              </button>
+            </div>
+          </div>
+
+          <!-- Join Room Card -->
+          <div class="ticket-card join-card">
+            <div class="ticket-header">
+              <span class="ticket-stub">GUEST PASS</span>
+              <span class="ticket-icon">🎟️</span>
+            </div>
+            <div class="ticket-body">
+              <h3>Join a Room</h3>
+              <p>Have a Ticket Code from a friend? Enter it below to join their live theatre room immediately.</p>
+              <div class="code-input-group">
+                <label for="room-code-input">Ticket Code:</label>
+                <input type="text" id="room-code-input" placeholder="e.g. CINEMA-7890" style="text-transform: uppercase;">
+              </div>
+            </div>
+            <div class="ticket-footer">
+              <button id="btn-join-room" class="btn-theatre btn-red">
+                <span>🎟️</span> Join Theatre Room
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- How It Works Feature Strip -->
+        <section class="how-it-works">
+          <div class="feature-item">
+            <span class="feature-emoji">🖥️</span>
+            <h4>Chrome-Style Window</h4>
+            <p>Browse websites, search URLs, or sync videos inside an intuitive Google Chrome layout.</p>
+          </div>
+          <div class="feature-item">
+            <span class="feature-emoji">🔊</span>
+            <h4>Shared Video & Audio</h4>
+            <p>WebRTC transmits the host's screen audio & video to all joined screens in real time.</p>
+          </div>
+          <div class="feature-item">
+            <span class="feature-emoji">🍿</span>
+            <h4>Interactive Theatre</h4>
+            <p>Send live floating emoji reactions, chat with movie badges, and dim stage lights!</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ==================== 2. ROOM VIEW (CINEMA STAGE) ==================== -->
+    <div id="view-room" class="view-panel">
+
+      <!-- Top Theatre Marquee Header -->
+      <header class="room-marquee-header">
+        <div class="marquee-left">
+          <div class="room-title-badge">
+            <span class="badge-icon">🎬</span>
+            <span class="room-name">CINE-PARTY HALL</span>
+          </div>
+
+          <!-- Room Ticket Code Badge -->
+          <div class="ticket-code-pill" id="ticket-code-display" title="Click to copy join code">
+            <span class="ticket-label">TICKET CODE:</span>
+            <strong id="display-room-code">CINEMA-XXXX</strong>
+            <button id="btn-copy-code" class="btn-copy-sm" title="Copy Code">📋 Copy</button>
+          </div>
+        </div>
+
+        <div class="marquee-right">
+          <!-- Dim Lights Button -->
+          <button id="btn-toggle-lights" class="btn-pill-action" title="Toggle Cinema Lights">
+            <span class="icon">💡</span> <span id="lights-btn-text">Dim Lights</span>
+          </button>
+
+          <!-- User Role Badge -->
+          <div id="user-role-badge" class="role-badge host-badge">
+            <span>🎬 HOST</span>
+          </div>
+
+          <!-- Leave Room Button -->
+          <button id="btn-leave-room" class="btn-pill-action btn-danger">
+            <span>🚪 Exit</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main Stage Layout (Chrome Window + Chat Sidebar) -->
+      <div class="stage-container">
+
+        <!-- Left / Center: Chrome Browser Stage Window -->
+        <div class="chrome-window-wrapper">
+
+          <!-- Chrome Browser Top Header -->
+          <div class="chrome-header">
+            <!-- Chrome Draggable Tabs -->
+            <div class="chrome-tabs-bar">
+              <div class="chrome-tab active" data-tab="screenshare" id="tab-screenshare">
+                <span class="tab-favicon">🍿</span>
+                <span class="tab-title">Host Screen Share</span>
+                <span class="tab-host-indicator">LIVE</span>
+              </div>
+              <div class="chrome-tab" data-tab="youtube" id="tab-youtube">
+                <span class="tab-favicon">🎬</span>
+                <span class="tab-title">YouTube Synced Video</span>
+              </div>
+              <div class="chrome-tab" data-tab="web" id="tab-web">
+                <span class="tab-favicon">🌐</span>
+                <span class="tab-title">Web Frame View</span>
+              </div>
+              <button class="chrome-new-tab-btn" title="Navigation Mode Shortcuts">+</button>
+            </div>
+
+            <!-- Chrome Address Bar & Controls -->
+            <div class="chrome-address-bar-wrapper">
+              <div class="nav-buttons">
+                <button class="nav-btn" id="btn-nav-back" title="Back">←</button>
+                <button class="nav-btn" id="btn-nav-forward" title="Forward">→</button>
+                <button class="nav-btn" id="btn-nav-reload" title="Reload">↻</button>
+              </div>
+
+              <!-- Address Bar / Search Input -->
+              <div class="chrome-url-box">
+                <span class="lock-icon">🔒</span>
+                <input type="text" id="chrome-url-input" placeholder="Type a YouTube link (e.g. https://www.youtube.com/watch?v=...) or website URL">
+                <button id="btn-navigate-url" class="btn-go-url">Go ➔</button>
+              </div>
+
+              <!-- Host Control Tag -->
+              <div class="address-bar-host-tag" id="address-bar-status">
+                <span class="status-dot green"></span> <span id="status-text">Host Control Active</span>
+              </div>
+            </div>
+
+            <!-- Quick Bookmark Pills -->
+            <div class="chrome-bookmarks-bar">
+              <span class="bookmarks-label">Quick Stages:</span>
+              <button class="bookmark-pill" id="bm-screenshare">🍿 Share Screen & Audio</button>
+              <button class="bookmark-pill" id="bm-youtube-demo">🎬 Big Buck Bunny (YouTube)</button>
+              <button class="bookmark-pill" id="bm-trailer">🍿 Movie Trailer</button>
+              <button class="bookmark-pill" id="bm-lofi">🎵 Lofi Music Stream</button>
+            </div>
+          </div>
+
+          <!-- Chrome Screen Viewport (The Cinema Stage) -->
+          <div class="chrome-viewport" id="cinema-viewport">
+
+            <!-- Floating Reaction Canvas / Emojis Layer -->
+            <div id="floating-reactions-layer" class="reactions-overlay-layer"></div>
+
+            <!-- 1. WebRTC Screen Share View (Primary Host Feed) -->
+            <div id="viewport-screenshare" class="stage-view-panel active">
+              <video id="remote-stream-video" autoplay playsinline class="stage-video"></video>
+              
+              <!-- Screen Share Placeholder / Prompt Overlay -->
+              <div id="screenshare-placeholder" class="stage-placeholder">
+                <div class="placeholder-card">
+                  <div class="placeholder-icon-bounce">🖥️</div>
+                  <h3 id="placeholder-title">Host Screen Share Stage</h3>
+                  <p id="placeholder-desc">The host can share any browser tab, app, or screen along with live audio!</p>
+                  
+                  <div id="host-screenshare-cta" class="cta-box">
+                    <button id="btn-start-share-cta" class="btn-theatre btn-gold btn-large">
+                      <span>🖥️</span> Start HD Screen & Audio Share
+                    </button>
+                    <p class="cta-hint">💡 Tip: Select "Share tab audio" when browser prompts to share sound with everyone!</p>
+                  </div>
+
+                  <div id="guest-waiting-cta" class="cta-box hidden">
+                    <div class="pulse-waiting-ring"></div>
+                    <p class="waiting-text">Waiting for host to start screen sharing... 🍿</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. YouTube Synced View -->
+            <div id="viewport-youtube" class="stage-view-panel">
+              <div class="youtube-player-wrapper">
+                <iframe id="yt-player-iframe" 
+                        src="https://www.youtube.com/embed/dQw4w9WgXcQ?enablejsapi=1&autoplay=0" 
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                        allowfullscreen>
+                </iframe>
+              </div>
+            </div>
+
+            <!-- 3. Web View Frame View -->
+            <div id="viewport-web" class="stage-view-panel">
+              <div class="web-iframe-wrapper">
+                <iframe id="web-view-iframe" src="about:blank" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+                <div id="iframe-fallback-banner" class="iframe-notice hidden">
+                  <p>⚠️ Some sites block direct iframe embedding due to CORS/security policies. Use <strong>Host Screen Share</strong> tab to stream any website live!</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Host Floating Stage Control Bar -->
+          <div class="host-stage-controls" id="host-controls-deck">
+            <div class="control-group">
+              <button id="btn-deck-share" class="btn-deck btn-deck-gold" title="Share Tab / Screen Audio & Video">
+                <span class="icon">🖥️</span> <span id="deck-share-text">Share Screen</span>
+              </button>
+            </div>
+
+            <div class="control-group media-sync-group">
+              <button id="btn-deck-playpause" class="btn-deck" title="Sync Play / Pause for all">
+                <span class="icon" id="playpause-icon">▶️</span> <span id="playpause-text">Play</span>
+              </button>
+              <div class="seek-bar-wrapper">
+                <input type="range" id="deck-seek-bar" min="0" max="100" value="0" step="0.1">
+              </div>
+            </div>
+
+            <div class="control-group">
+              <button id="btn-deck-lights" class="btn-deck" title="Dim Stage Lights">
+                <span class="icon">💡</span>
+              </button>
+              <button id="btn-deck-fullscreen" class="btn-deck" title="Toggle Fullscreen Stage">
+                <span class="icon">⛶</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right: Interactive Audience Lounge & Chat Sidebar -->
+        <aside class="theatre-sidebar">
+          
+          <!-- Sidebar Tabs: Chat vs Audience -->
+          <div class="sidebar-tabs">
+            <button class="sidebar-tab active" id="tab-sidebar-chat" data-side="chat">
+              <span>💬 Theatre Chat</span>
+            </button>
+            <button class="sidebar-tab" id="tab-sidebar-audience" data-side="audience">
+              <span>👥 Audience (<span id="audience-count">1</span>)</span>
+            </button>
+          </div>
+
+          <!-- Chat Section -->
+          <div id="side-panel-chat" class="sidebar-panel active">
+            
+            <!-- Real-Time Floating Emoji Reaction Bar -->
+            <div class="interactive-emoji-bar">
+              <div class="emoji-bar-title">Shower Screen with Emojis:</div>
+              <div class="emoji-buttons-grid">
+                <button class="btn-emoji-react" data-emoji="🍿" title="Popcorn!">🍿</button>
+                <button class="btn-emoji-react" data-emoji="👏" title="Applause!">👏</button>
+                <button class="btn-emoji-react" data-emoji="🔥" title="Fire!">🔥</button>
+                <button class="btn-emoji-react" data-emoji="❤️" title="Love!">❤️</button>
+                <button class="btn-emoji-react" data-emoji="😂" title="Laughing!">😂</button>
+                <button class="btn-emoji-react" data-emoji="🎉" title="Party!">🎉</button>
+                <button class="btn-emoji-react" data-emoji="🎟️" title="Ticket!">🎟️</button>
+                <button class="btn-emoji-react" data-emoji="🎬" title="Action!">🎬</button>
+              </div>
+            </div>
+
+            <!-- Chat Message Feed -->
+            <div class="chat-messages-container" id="chat-messages-box">
+              <div class="chat-system-msg">
+                <span class="system-icon">🍿</span> Welcome to the CINE-PARTY Theatre! Send messages and click emojis to shower the screen.
+              </div>
+            </div>
+
+            <!-- Chat Input Box -->
+            <form id="chat-form" class="chat-input-form">
+              <input type="text" id="chat-input" placeholder="Type a message to the audience..." autocomplete="off">
+              <button type="submit" class="btn-send-chat">Send ➔</button>
+            </form>
+          </div>
+
+          <!-- Audience List Section -->
+          <div id="side-panel-audience" class="sidebar-panel">
+            <div class="audience-header">
+              <h4>Connected Viewers</h4>
+            </div>
+            <ul id="audience-list" class="audience-list-ul">
+              <!-- Dynamically populated -->
+            </ul>
+          </div>
+
+        </aside>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Notification Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Application Scripts -->
+  <script src="js/webrtc.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
