@@ -1,91 +1,128 @@
 /* ==========================================================================
-   WEBRTC SCREEN & AUDIO SHARING MODULE
-   Handles DisplayMedia Capture & Real-Time Peer-to-Peer Stream Broadcasting
+   WEBRTC SCREEN & AUDIO SHARING MODULE (DIRECT SOCKET.IO SIGNALING)
+   Native WebRTC RTCPeerConnection for HD Low-Latency Screen & Audio Share
    ========================================================================== */
 
 class WebRTCManager {
   constructor(socket) {
     this.socket = socket;
-    this.peer = null;
-    this.peerId = null;
     this.localStream = null;
-    this.activeCalls = new Map(); // socketId/peerId -> PeerCall
+    this.peerConnections = new Map(); // targetSocketId -> RTCPeerConnection
     this.isSharing = false;
 
     this.videoElement = document.getElementById('remote-stream-video');
     this.placeholderEl = document.getElementById('screenshare-placeholder');
+
+    this.iceServers = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
+      ]
+    };
+
+    this.initSocketSignaling();
   }
 
-  // Initialize PeerJS Client connected directly to our server's native /peerjs endpoint
-  initPeer() {
-    return new Promise((resolve, reject) => {
-      const isHttps = window.location.protocol === 'https:';
-      const host = window.location.hostname;
-      let port = window.location.port;
+  // Socket.io Native WebRTC Signaling
+  initSocketSignaling() {
+    // Receive Offer from Host (Guest side)
+    this.socket.on('webrtc-offer', async ({ senderSocketId, offer }) => {
+      console.log(`[WebRTC Direct] Received Offer from Host (${senderSocketId})`);
+      const pc = this.createPeerConnection(senderSocketId);
 
-      if (!port) {
-        port = isHttps ? 443 : 80;
-      } else {
-        port = parseInt(port, 10);
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        this.socket.emit('webrtc-answer', {
+          targetSocketId: senderSocketId,
+          answer: pc.localDescription
+        });
+      } catch (err) {
+        console.error('[WebRTC Offer Error]', err);
       }
+    });
 
-      console.log(`[PeerJS Config] Host: ${host}, Port: ${port}, Secure: ${isHttps}`);
-
-      this.peer = new Peer(undefined, {
-        host: host,
-        port: port,
-        path: '/peerjs/peerapp',
-        secure: isHttps,
-        debug: 1,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-          ]
+    // Receive Answer from Guest (Host side)
+    this.socket.on('webrtc-answer', async ({ senderSocketId, answer }) => {
+      console.log(`[WebRTC Direct] Received Answer from Guest (${senderSocketId})`);
+      const pc = this.peerConnections.get(senderSocketId);
+      if (pc) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        } catch (err) {
+          console.error('[WebRTC Answer Error]', err);
         }
-      });
+      }
+    });
 
-      this.peer.on('open', (id) => {
-        console.log(`[PeerJS Initialized Native] ID: ${id}`);
-        this.peerId = id;
-        this.socket.emit('register-peer', { peerId: id });
-        resolve(id);
-      });
-
-      // Handle incoming stream calls (For Participants)
-      this.peer.on('call', (call) => {
-        console.log(`[PeerJS Incoming Call] From: ${call.peer}`);
-        call.answer(); // Answer incoming host stream
-
-        call.on('stream', (remoteStream) => {
-          console.log('[PeerJS Stream Received]', remoteStream);
-          this.attachStreamToVideo(remoteStream);
-        });
-
-        call.on('close', () => {
-          console.log('[PeerJS Call Closed]');
-          this.clearVideo();
-        });
-
-        call.on('error', (err) => {
-          console.error('[PeerJS Call Error]', err);
-        });
-      });
-
-      this.peer.on('error', (err) => {
-        console.warn('[PeerJS Error]', err);
-      });
+    // Receive ICE Candidate
+    this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
+      const pc = this.peerConnections.get(senderSocketId);
+      if (pc && candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn('[WebRTC Candidate Error]', err);
+        }
+      }
     });
   }
 
-  // Start Screen & Audio Sharing (Host Only)
+  createPeerConnection(targetSocketId) {
+    if (this.peerConnections.has(targetSocketId)) {
+      this.peerConnections.get(targetSocketId).close();
+      this.peerConnections.delete(targetSocketId);
+    }
+
+    const pc = new RTCPeerConnection(this.iceServers);
+    this.peerConnections.set(targetSocketId, pc);
+
+    // Send ICE candidates to target socket
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.socket.emit('webrtc-ice-candidate', {
+          targetSocketId: targetSocketId,
+          candidate: event.candidate
+        });
+      }
+    };
+
+    // Receive remote tracks (Guest side)
+    pc.ontrack = (event) => {
+      console.log('[WebRTC Direct Track Received]', event.streams[0]);
+      if (event.streams && event.streams[0]) {
+        this.attachStreamToVideo(event.streams[0]);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC ICE State] ${targetSocketId}: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        this.clearVideo();
+      }
+    };
+
+    // If host has active stream, add local tracks
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, this.localStream);
+      });
+    }
+
+    return pc;
+  }
+
+  // Start Screen Share (Host Only)
   async startScreenShare(userList = []) {
     try {
-      console.log('[WebRTC] Requesting getDisplayMedia with audio...');
+      console.log('[WebRTC Direct] Requesting getDisplayMedia with audio...');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           displaySurface: 'browser',
@@ -101,7 +138,7 @@ class WebRTCManager {
       this.localStream = stream;
       this.isSharing = true;
 
-      // Attach stream locally
+      // Attach stream locally for Host
       this.attachStreamToVideo(stream);
 
       // Handle when host stops sharing via browser native bar
@@ -110,10 +147,13 @@ class WebRTCManager {
         this.stopScreenShare();
       };
 
-      // Call all active peers in room
-      this.broadcastStreamToPeers(userList);
+      // Call all active users in room
+      userList.forEach((user) => {
+        if (user.socketId !== this.socket.id) {
+          this.connectToSingleUser(user.socketId);
+        }
+      });
 
-      // Notify server
       this.socket.emit('screen-share-status', { isSharing: true });
       return true;
     } catch (err) {
@@ -125,28 +165,22 @@ class WebRTCManager {
     }
   }
 
-  // Call all connected peer IDs in the room
-  broadcastStreamToPeers(userList) {
-    if (!this.localStream || !this.peer) return;
+  async connectToSingleUser(targetSocketId) {
+    if (!this.localStream) return;
+    console.log(`[WebRTC Direct] Creating Offer for target user ${targetSocketId}...`);
 
-    userList.forEach((u) => {
-      if (u.peerId && u.peerId !== this.peerId) {
-        console.log(`[WebRTC] Calling peer ${u.peerId}...`);
-        const call = this.peer.call(u.peerId, this.localStream);
-        if (call) {
-          this.activeCalls.set(u.peerId, call);
-        }
-      }
-    });
-  }
+    const pc = this.createPeerConnection(targetSocketId);
 
-  // Call a newly joined single peer (Host -> new guest)
-  callSinglePeer(peerId) {
-    if (!this.localStream || !this.peer || !peerId || peerId === this.peerId) return;
-    console.log(`[WebRTC] Calling newly joined peer ${peerId}...`);
-    const call = this.peer.call(peerId, this.localStream);
-    if (call) {
-      this.activeCalls.set(peerId, call);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      this.socket.emit('webrtc-offer', {
+        targetSocketId: targetSocketId,
+        offer: pc.localDescription
+      });
+    } catch (err) {
+      console.error('[WebRTC Offer Generation Error]', err);
     }
   }
 
@@ -159,9 +193,8 @@ class WebRTCManager {
 
     this.isSharing = false;
 
-    // Close all active calls
-    this.activeCalls.forEach((call) => call.close());
-    this.activeCalls.clear();
+    this.peerConnections.forEach((pc) => pc.close());
+    this.peerConnections.clear();
 
     this.clearVideo();
     this.socket.emit('screen-share-status', { isSharing: false });
@@ -173,11 +206,10 @@ class WebRTCManager {
       this.videoElement.srcObject = stream;
       this.videoElement.style.display = 'block';
 
-      // Try playing with sound first
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
         playPromise.catch((err) => {
-          console.warn('[Autoplay Policy] Video play blocked with sound, attempting muted playback:', err);
+          console.warn('[Autoplay Policy] Video play blocked, attempting muted playback:', err);
           this.videoElement.muted = true;
           this.videoElement.play().then(() => {
             if (typeof showToast === 'function') {

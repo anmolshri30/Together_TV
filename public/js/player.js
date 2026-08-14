@@ -1,18 +1,17 @@
 /* ==========================================================================
    SYNCHRONIZED MEDIA & BROWSER URL MANAGER
-   Handles YouTube iFrame API, Play/Pause/Seek Real-Time Synchronization
+   Handles Continuous YouTube Sync, Host-Only Play/Pause Control, & Address Bar
    ========================================================================== */
 
 class PlayerManager {
   constructor(socket) {
     this.socket = socket;
     this.currentMode = 'screenshare'; // 'screenshare' | 'youtube' | 'web'
-    this.currentUrl = '';
+    this.currentUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ';
     this.ytPlayer = null;
     this.isHost = false;
-    this.isSyncing = false; // Prevent echo loop when applying remote sync
+    this.isSyncing = false; // Prevent echo loops during socket updates
 
-    this.ytIframe = document.getElementById('yt-player-iframe');
     this.webIframe = document.getElementById('web-view-iframe');
     this.urlInput = document.getElementById('chrome-url-input');
     this.iframeNotice = document.getElementById('iframe-fallback-banner');
@@ -24,88 +23,151 @@ class PlayerManager {
     this.seekBar = document.getElementById('deck-seek-bar');
   }
 
+  // Safe helper for YT.PlayerState enum
+  getYTStates() {
+    return {
+      PLAYING: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.PLAYING : 1,
+      PAUSED: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.PAUSED : 2,
+      BUFFERING: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.BUFFERING : 3
+    };
+  }
+
   init() {
     // Listen for Chrome address bar navigation
     const btnNav = document.getElementById('btn-navigate-url');
     if (btnNav) {
-      btnNav.addEventListener('click', () => this.handleUrlSubmit());
+      btnNav.addEventListener('click', () => {
+        if (this.isHost) this.handleUrlSubmit();
+      });
     }
 
     if (this.urlInput) {
       this.urlInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') this.handleUrlSubmit();
+        if (e.key === 'Enter' && this.isHost) this.handleUrlSubmit();
       });
     }
 
-    // Tab switching event listeners
+    // Tab switching event listeners (Allows tab switching for all users)
     document.querySelectorAll('.chrome-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
         const mode = tab.getAttribute('data-tab');
-        this.switchTabMode(mode, true);
+        this.switchTabMode(mode, this.isHost);
       });
     });
 
-    // Bookmarks Pills
+    // Bookmarks Pills (Host only)
     const bmYoutube = document.getElementById('bm-youtube-demo');
     if (bmYoutube) {
       bmYoutube.addEventListener('click', () => {
-        this.loadUrl('https://www.youtube.com/watch?v=aqz-KE-bpKQ', 'youtube', true);
+        if (this.isHost) this.loadUrl('https://www.youtube.com/watch?v=aqz-KE-bpKQ', 'youtube', true);
       });
     }
 
     const bmTrailer = document.getElementById('bm-trailer');
     if (bmTrailer) {
       bmTrailer.addEventListener('click', () => {
-        this.loadUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'youtube', true);
+        if (this.isHost) this.loadUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'youtube', true);
       });
     }
 
     const bmLofi = document.getElementById('bm-lofi');
     if (bmLofi) {
       bmLofi.addEventListener('click', () => {
-        this.loadUrl('https://www.youtube.com/watch?v=jfKfPfyJRdk', 'youtube', true);
+        if (this.isHost) this.loadUrl('https://www.youtube.com/watch?v=jfKfPfyJRdk', 'youtube', true);
       });
     }
 
     const bmScreenshare = document.getElementById('bm-screenshare');
     if (bmScreenshare) {
       bmScreenshare.addEventListener('click', () => {
-        this.switchTabMode('screenshare', true);
+        if (this.isHost) this.switchTabMode('screenshare', true);
       });
     }
 
-    // Control Deck Play/Pause Click
+    // Control Deck Play/Pause Click (Host only)
     if (this.btnPlayPause) {
       this.btnPlayPause.addEventListener('click', () => {
-        this.togglePlayPauseDeck();
+        if (this.isHost) this.togglePlayPauseDeck();
       });
     }
 
-    // Control Deck Seek Bar Drag
+    // Control Deck Seek Bar Drag (Host only)
     if (this.seekBar) {
       this.seekBar.addEventListener('change', () => {
-        if (this.ytPlayer && typeof this.ytPlayer.getDuration === 'function') {
+        if (this.isHost && this.ytPlayer && typeof this.ytPlayer.getDuration === 'function') {
           const duration = this.ytPlayer.getDuration();
           const targetTime = (this.seekBar.value / 100) * duration;
           this.ytPlayer.seekTo(targetTime, true);
-          if (this.isHost) {
-            this.socket.emit('sync-playback', { action: 'seek', time: targetTime });
-          }
+          this.socket.emit('sync-playback', { action: 'seek', time: targetTime });
         }
       });
     }
 
-    // Initialize YouTube iFrame API
+    // Socket Listener: Continuous Heartbeat Sync (Guest Side)
+    this.socket.on('sync-heartbeat', ({ time, isPlaying }) => {
+      if (this.isHost || !this.ytPlayer) return;
+      this.isSyncing = true;
+
+      const ytStates = this.getYTStates();
+      const currTime = typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
+      const state = typeof this.ytPlayer.getPlayerState === 'function' ? this.ytPlayer.getPlayerState() : -1;
+
+      // Continuous drift correction (< 0.8 second threshold)
+      if (typeof time === 'number' && Math.abs(currTime - time) > 0.8) {
+        console.log(`[Continuous Sync] Correcting guest drift from ${currTime.toFixed(1)}s to ${time.toFixed(1)}s`);
+        this.ytPlayer.seekTo(time, true);
+      }
+
+      // Continuous play/pause enforcement
+      if (isPlaying && state !== ytStates.PLAYING && state !== ytStates.BUFFERING) {
+        if (typeof this.ytPlayer.playVideo === 'function') this.ytPlayer.playVideo();
+        this.updateDeckPlayPauseUI(true);
+      } else if (!isPlaying && state === ytStates.PLAYING) {
+        if (typeof this.ytPlayer.pauseVideo === 'function') this.ytPlayer.pauseVideo();
+        this.updateDeckPlayPauseUI(false);
+      }
+
+      setTimeout(() => {
+        this.isSyncing = false;
+      }, 400);
+    });
+
+    // Initialize YouTube IFrame API & Heartbeat
     this.initYouTubeAPI();
+    this.startHostHeartbeatLoop();
   }
 
-  // Load YouTube API
+  // Continuous Heartbeat Loop (Host Side)
+  startHostHeartbeatLoop() {
+    setInterval(() => {
+      const ytStates = this.getYTStates();
+      if (this.isHost && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' && this.currentMode === 'youtube') {
+        const time = this.ytPlayer.getCurrentTime();
+        const isPlaying = (this.ytPlayer.getPlayerState() === ytStates.PLAYING);
+        this.socket.emit('sync-heartbeat', { time, isPlaying, mode: this.currentMode });
+      }
+    }, 1500);
+  }
+
+  // Load YouTube API dynamically
   initYouTubeAPI() {
     const setupPlayer = () => {
       if (window.YT && window.YT.Player) {
-        this.ytPlayer = new window.YT.Player('yt-player-iframe', {
+        console.log('[YouTube API] Initializing YT.Player...');
+        this.ytPlayer = new window.YT.Player('yt-player-container', {
+          height: '100%',
+          width: '100%',
+          videoId: 'aqz-KE-bpKQ',
+          playerVars: {
+            'autoplay': 0,
+            'controls': 1,
+            'enablejsapi': 1,
+            'rel': 0,
+            'modestbranding': 1,
+            'origin': window.location.origin
+          },
           events: {
-            'onReady': () => console.log('[YouTube Player API] Ready!'),
+            'onReady': () => console.log('[YouTube Player API] Synced & Ready!'),
             'onStateChange': (event) => this.onYouTubeStateChange(event)
           }
         });
@@ -121,21 +183,24 @@ class PlayerManager {
     }
   }
 
-  // Handle YouTube Player State Change
+  // Handle YouTube Player State Changes
   onYouTubeStateChange(event) {
-    if (this.isSyncing) return; // ignore events triggered by socket sync
+    if (this.isSyncing) return;
 
     const state = event.data;
+    const ytStates = this.getYTStates();
     const currentTime = this.ytPlayer ? this.ytPlayer.getCurrentTime() : 0;
 
-    if (state === window.YT.PlayerState.PLAYING) {
+    if (state === ytStates.PLAYING) {
       this.updateDeckPlayPauseUI(true);
       if (this.isHost) {
+        console.log(`[Host Action] Play at ${currentTime}s -> Broadcasting to all guests`);
         this.socket.emit('sync-playback', { action: 'play', time: currentTime });
       }
-    } else if (state === window.YT.PlayerState.PAUSED) {
+    } else if (state === ytStates.PAUSED) {
       this.updateDeckPlayPauseUI(false);
       if (this.isHost) {
+        console.log(`[Host Action] Pause at ${currentTime}s -> Broadcasting to all guests`);
         this.socket.emit('sync-playback', { action: 'pause', time: currentTime });
       }
     }
@@ -143,21 +208,18 @@ class PlayerManager {
 
   // Toggle Play / Pause from Control Deck
   togglePlayPauseDeck() {
-    if (!this.ytPlayer) return;
+    if (!this.ytPlayer || !this.isHost) return;
 
-    const state = this.ytPlayer.getPlayerState();
-    if (state === window.YT.PlayerState.PLAYING) {
+    const ytStates = this.getYTStates();
+    const state = typeof this.ytPlayer.getPlayerState === 'function' ? this.ytPlayer.getPlayerState() : -1;
+    if (state === ytStates.PLAYING) {
       this.ytPlayer.pauseVideo();
       this.updateDeckPlayPauseUI(false);
-      if (this.isHost) {
-        this.socket.emit('sync-playback', { action: 'pause', time: this.ytPlayer.getCurrentTime() });
-      }
+      this.socket.emit('sync-playback', { action: 'pause', time: this.ytPlayer.getCurrentTime() });
     } else {
       this.ytPlayer.playVideo();
       this.updateDeckPlayPauseUI(true);
-      if (this.isHost) {
-        this.socket.emit('sync-playback', { action: 'play', time: this.ytPlayer.getCurrentTime() });
-      }
+      this.socket.emit('sync-playback', { action: 'play', time: this.ytPlayer.getCurrentTime() });
     }
   }
 
@@ -176,7 +238,6 @@ class PlayerManager {
 
     if (inputVal.includes('youtube.com') || inputVal.includes('youtu.be')) {
       mode = 'youtube';
-      targetUrl = this.convertToYouTubeEmbed(inputVal);
     } else if (!inputVal.startsWith('http://') && !inputVal.startsWith('https://')) {
       targetUrl = `https://${inputVal}`;
     }
@@ -184,19 +245,16 @@ class PlayerManager {
     this.loadUrl(targetUrl, mode, true);
   }
 
-  // Convert YouTube link to embed URL with enablejsapi=1
-  convertToYouTubeEmbed(url) {
-    let videoId = '';
+  // Extract YouTube ID
+  extractVideoId(url) {
     if (url.includes('youtu.be/')) {
-      videoId = url.split('youtu.be/')[1].split('?')[0];
+      return url.split('youtu.be/')[1].split('?')[0];
     } else if (url.includes('watch?v=')) {
-      videoId = url.split('watch?v=')[1].split('&')[0];
+      return url.split('watch?v=')[1].split('&')[0];
     } else if (url.includes('/embed/')) {
-      const parts = url.split('/embed/')[1].split('?')[0];
-      videoId = parts;
+      return url.split('/embed/')[1].split('?')[0];
     }
-
-    return videoId ? `https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=1` : url;
+    return '';
   }
 
   // Load URL into appropriate player/iframe
@@ -214,8 +272,6 @@ class PlayerManager {
       const videoId = this.extractVideoId(url);
       if (this.ytPlayer && typeof this.ytPlayer.loadVideoById === 'function' && videoId) {
         this.ytPlayer.loadVideoById(videoId);
-      } else if (this.ytIframe) {
-        this.ytIframe.src = this.convertToYouTubeEmbed(url);
       }
     } else if (mode === 'web') {
       if (this.webIframe) {
@@ -229,17 +285,6 @@ class PlayerManager {
     if (broadcast && this.isHost) {
       this.socket.emit('sync-navigation', { url: this.currentUrl, mode: this.currentMode });
     }
-  }
-
-  extractVideoId(url) {
-    if (url.includes('youtu.be/')) {
-      return url.split('youtu.be/')[1].split('?')[0];
-    } else if (url.includes('watch?v=')) {
-      return url.split('watch?v=')[1].split('&')[0];
-    } else if (url.includes('/embed/')) {
-      return url.split('/embed/')[1].split('?')[0];
-    }
-    return '';
   }
 
   // Switch Chrome Tab View
@@ -266,11 +311,13 @@ class PlayerManager {
 
   // Handle incoming playback sync from socket
   handleSyncPlayback(action, time) {
-    console.log(`[Player Sync Action] ${action} at ${time}s`);
+    console.log(`[Player Remote Sync Action] ${action} at ${time}s`);
     this.isSyncing = true;
 
-    if (this.ytPlayer) {
-      if (typeof time === 'number' && Math.abs((this.ytPlayer.getCurrentTime() || 0) - time) > 1.2) {
+    if (this.ytPlayer && typeof this.ytPlayer.playVideo === 'function') {
+      const currTime = typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
+
+      if (typeof time === 'number' && Math.abs(currTime - time) > 0.8) {
         this.ytPlayer.seekTo(time, true);
       }
 
@@ -287,7 +334,7 @@ class PlayerManager {
 
     setTimeout(() => {
       this.isSyncing = false;
-    }, 500);
+    }, 400);
   }
 }
 

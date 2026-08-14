@@ -1348,6 +1348,18 @@ body.lights-dimmed .chrome-window-wrapper {
   100% { opacity: 1; transform: translateX(0); }
 }
 
+/* Guest Host-Only Lockout Restrictions */
+body.is-guest-user #yt-player-container {
+  pointer-events: none;
+}
+
+body.is-guest-user .chrome-url-box input,
+body.is-guest-user .btn-go-url,
+body.is-guest-user .bookmark-pill {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
 /* Responsive Breakdown */
 @media (max-width: 900px) {
   .lobby-cards-grid {

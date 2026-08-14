@@ -7,14 +7,25 @@ const { ExpressPeerServer } = require('peer');
 
 const app = express();
 app.use(cors());
+
+// Automatically redirect http:// to https:// on production deployments (Render / GoDaddy)
+app.use((req, res, next) => {
+  if (req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'] !== 'https') {
+    return res.redirect(301, `https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 
-// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains
+// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains (Render Reverse Proxy compatible)
 const peerServer = ExpressPeerServer(server, {
   debug: true,
-  path: '/peerapp'
+  path: '/peerapp',
+  proxied: true,
+  allow_discovery: true
 });
 app.use('/peerjs', peerServer);
 
@@ -183,12 +194,34 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Direct Socket.io WebRTC Signaling (Offer / Answer / ICE Candidate)
+  socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
+    io.to(targetSocketId).emit('webrtc-offer', {
+      senderSocketId: socket.id,
+      offer
+    });
+  });
+
+  socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
+    io.to(targetSocketId).emit('webrtc-answer', {
+      senderSocketId: socket.id,
+      answer
+    });
+  });
+
+  socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
+    io.to(targetSocketId).emit('webrtc-ice-candidate', {
+      senderSocketId: socket.id,
+      candidate
+    });
+  });
+
   // Media Playback Sync (Play / Pause / Seek)
   socket.on('sync-playback', ({ action, time }) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
-    if (!room) return;
+    if (!room || room.hostSocketId !== socket.id) return; // Only Host can trigger playback sync!
 
     if (action === 'play') room.isPlaying = true;
     if (action === 'pause') room.isPlaying = false;
@@ -198,6 +231,23 @@ io.on('connection', (socket) => {
       action,
       time: room.currentTime,
       senderSocketId: socket.id
+    });
+  });
+
+  // Continuous Heartbeat Sync (Host -> Room)
+  socket.on('sync-heartbeat', ({ time, isPlaying, mode }) => {
+    const code = socket.roomCode;
+    if (!code) return;
+    const room = rooms.get(code);
+    if (!room || room.hostSocketId !== socket.id) return;
+
+    room.currentTime = time;
+    room.isPlaying = isPlaying;
+
+    socket.to(code).emit('sync-heartbeat', {
+      time,
+      isPlaying,
+      mode
     });
   });
 

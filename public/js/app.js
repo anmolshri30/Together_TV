@@ -51,9 +51,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const audienceListUl = document.getElementById('audience-list');
   const audienceCountEl = document.getElementById('audience-count');
 
-  // Initialize WebRTC Peer
-  webrtc.initPeer();
-
+  // Socket.io Signaling & WebRTC initialized in WebRTCManager constructor
+  
   // ==================== LOBBY & ROOM ROUTING ====================
 
   // Create Room Click
@@ -111,11 +110,15 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('host-screenshare-cta').classList.remove('hidden');
       document.getElementById('guest-waiting-cta').classList.add('hidden');
       document.getElementById('address-bar-status').classList.remove('hidden');
+      document.getElementById('host-controls-deck').style.display = 'flex';
+      document.body.classList.remove('is-guest-user');
     } else {
       userRoleBadge.className = 'role-badge guest-badge';
       userRoleBadge.innerHTML = '<span>🎟️ GUEST</span>';
       document.getElementById('host-screenshare-cta').classList.add('hidden');
       document.getElementById('guest-waiting-cta').classList.remove('hidden');
+      document.getElementById('host-controls-deck').style.display = 'none'; // Hide deck controls for guest
+      document.body.classList.add('is-guest-user');
     }
 
     // Switch View Panels
@@ -164,9 +167,10 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAudienceList(users);
     addSystemChatMessage(`🎟️ ${user.username} entered the theatre!`);
 
-    // If host is screen sharing, stream to new peer
-    if (isHost && webrtc.isSharing && user.peerId) {
-      webrtc.callSinglePeer(user.peerId);
+    // If host is screen sharing, stream directly to newly joined user
+    if (isHost && webrtc.isSharing && user.socketId) {
+      console.log(`[Host] Connecting WebRTC stream to new guest: ${user.socketId}`);
+      webrtc.connectToSingleUser(user.socketId);
     }
   });
 
@@ -177,13 +181,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Peer Registered
-  socket.on('peer-registered', ({ users, socketId, peerId }) => {
+  socket.on('peer-registered', ({ users }) => {
     updateAudienceList(users);
-    // If I am Host and currently screen sharing, call the newly registered peer!
-    if (isHost && webrtc.isSharing && socketId !== socket.id && peerId) {
-      console.log(`[Host] Calling newly registered guest peer: ${peerId}`);
-      webrtc.callSinglePeer(peerId);
-    }
   });
 
   // Screen Share Status Update

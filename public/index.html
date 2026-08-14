@@ -10,9 +10,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;700;800;900&display=swap" rel="stylesheet">
 
-  <!-- Socket.io & PeerJS Client Libraries -->
+  <!-- Socket.io, PeerJS & YouTube API Client Libraries -->
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
 
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -262,11 +263,7 @@
             <!-- 2. YouTube Synced View -->
             <div id="viewport-youtube" class="stage-view-panel">
               <div class="youtube-player-wrapper">
-                <iframe id="yt-player-iframe" 
-                        src="https://www.youtube.com/embed/dQw4w9WgXcQ?enablejsapi=1&autoplay=0" 
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                        allowfullscreen>
-                </iframe>
+                <div id="yt-player-container"></div>
               </div>
             </div>
 
