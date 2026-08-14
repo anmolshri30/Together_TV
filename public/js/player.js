@@ -144,6 +144,12 @@ class PlayerManager {
       if (this.isHost && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' && this.currentMode === 'youtube') {
         const time = this.ytPlayer.getCurrentTime();
         const isPlaying = (this.ytPlayer.getPlayerState() === ytStates.PLAYING);
+        if (this.seekBar && typeof this.ytPlayer.getDuration === 'function') {
+          const duration = this.ytPlayer.getDuration();
+          if (duration > 0) {
+            this.seekBar.value = (time / duration) * 100;
+          }
+        }
         this.socket.emit('sync-heartbeat', { time, isPlaying, mode: this.currentMode });
       }
     }, 1500);
@@ -167,7 +173,13 @@ class PlayerManager {
             'origin': window.location.origin
           },
           events: {
-            'onReady': () => console.log('[YouTube Player API] Synced & Ready!'),
+            'onReady': () => {
+              console.log('[YouTube Player API] Synced & Ready!');
+              if (this.pendingVideoId && typeof this.ytPlayer.loadVideoById === 'function') {
+                this.ytPlayer.loadVideoById(this.pendingVideoId);
+                this.pendingVideoId = null;
+              }
+            },
             'onStateChange': (event) => this.onYouTubeStateChange(event)
           }
         });
@@ -245,16 +257,12 @@ class PlayerManager {
     this.loadUrl(targetUrl, mode, true);
   }
 
-  // Extract YouTube ID
+  // Extract YouTube ID using robust regular expression
   extractVideoId(url) {
-    if (url.includes('youtu.be/')) {
-      return url.split('youtu.be/')[1].split('?')[0];
-    } else if (url.includes('watch?v=')) {
-      return url.split('watch?v=')[1].split('&')[0];
-    } else if (url.includes('/embed/')) {
-      return url.split('/embed/')[1].split('?')[0];
-    }
-    return '';
+    if (!url) return '';
+    const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+    const match = url.match(regExp);
+    return (match && match[1]) ? match[1] : '';
   }
 
   // Load URL into appropriate player/iframe
@@ -270,8 +278,12 @@ class PlayerManager {
 
     if (mode === 'youtube') {
       const videoId = this.extractVideoId(url);
-      if (this.ytPlayer && typeof this.ytPlayer.loadVideoById === 'function' && videoId) {
-        this.ytPlayer.loadVideoById(videoId);
+      if (videoId) {
+        if (this.ytPlayer && typeof this.ytPlayer.loadVideoById === 'function') {
+          this.ytPlayer.loadVideoById(videoId);
+        } else {
+          this.pendingVideoId = videoId;
+        }
       }
     } else if (mode === 'web') {
       if (this.webIframe) {

@@ -70,6 +70,7 @@ io.on('connection', (socket) => {
       isPlaying: false,
       currentTime: 0,
       lightsDimmed: false,
+      isScreenSharing: false,
       users: new Map([[socket.id, user]])
     };
 
@@ -87,6 +88,7 @@ io.on('connection', (socket) => {
         isPlaying: room.isPlaying,
         currentTime: room.currentTime,
         lightsDimmed: room.lightsDimmed,
+        isScreenSharing: room.isScreenSharing,
         users: Array.from(room.users.values())
       }
     });
@@ -130,6 +132,7 @@ io.on('connection', (socket) => {
         isPlaying: room.isPlaying,
         currentTime: room.currentTime,
         lightsDimmed: room.lightsDimmed,
+        isScreenSharing: room.isScreenSharing,
         users: userList
       }
     });
@@ -174,6 +177,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
     if (!room || room.hostSocketId !== socket.id) return;
 
+    room.isScreenSharing = isSharing;
     io.to(code).emit('screen-share-status', { isSharing });
   });
 

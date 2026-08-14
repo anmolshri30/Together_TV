@@ -8,6 +8,7 @@ class WebRTCManager {
     this.socket = socket;
     this.localStream = null;
     this.peerConnections = new Map(); // targetSocketId -> RTCPeerConnection
+    this.iceCandidatesQueue = new Map(); // targetSocketId -> Array of RTCIceCandidate
     this.isSharing = false;
 
     this.videoElement = document.getElementById('remote-stream-video');
@@ -28,6 +29,22 @@ class WebRTCManager {
     this.initSocketSignaling();
   }
 
+  // Process queued candidates after remote description is set
+  async processIceCandidateQueue(targetSocketId, pc) {
+    const queue = this.iceCandidatesQueue.get(targetSocketId);
+    if (queue && queue.length > 0) {
+      console.log(`[WebRTC] Draining ${queue.length} queued ICE candidates for ${targetSocketId}`);
+      while (queue.length > 0) {
+        const candidate = queue.shift();
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn('[WebRTC Queued Candidate Error]', err);
+        }
+      }
+    }
+  }
+
   // Socket.io Native WebRTC Signaling
   initSocketSignaling() {
     // Receive Offer from Host (Guest side)
@@ -37,6 +54,8 @@ class WebRTCManager {
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await this.processIceCandidateQueue(senderSocketId, pc);
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
@@ -56,6 +75,7 @@ class WebRTCManager {
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          await this.processIceCandidateQueue(senderSocketId, pc);
         } catch (err) {
           console.error('[WebRTC Answer Error]', err);
         }
@@ -65,11 +85,19 @@ class WebRTCManager {
     // Receive ICE Candidate
     this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
       const pc = this.peerConnections.get(senderSocketId);
-      if (pc && candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.warn('[WebRTC Candidate Error]', err);
+      if (candidate) {
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (err) {
+            console.warn('[WebRTC Candidate Error]', err);
+          }
+        } else {
+          // Queue candidate until remote description is set
+          if (!this.iceCandidatesQueue.has(senderSocketId)) {
+            this.iceCandidatesQueue.set(senderSocketId, []);
+          }
+          this.iceCandidatesQueue.get(senderSocketId).push(candidate);
         }
       }
     });
@@ -98,7 +126,7 @@ class WebRTCManager {
     pc.ontrack = (event) => {
       console.log('[WebRTC Direct Track Received]', event.streams[0]);
       if (event.streams && event.streams[0]) {
-        this.attachStreamToVideo(event.streams[0]);
+        this.attachStreamToVideo(event.streams[0], false);
       }
     };
 
@@ -138,8 +166,8 @@ class WebRTCManager {
       this.localStream = stream;
       this.isSharing = true;
 
-      // Attach stream locally for Host
-      this.attachStreamToVideo(stream);
+      // Attach stream locally for Host (Muted to prevent audio echo)
+      this.attachStreamToVideo(stream, true);
 
       // Handle when host stops sharing via browser native bar
       stream.getVideoTracks()[0].onended = () => {
@@ -195,16 +223,24 @@ class WebRTCManager {
 
     this.peerConnections.forEach((pc) => pc.close());
     this.peerConnections.clear();
+    this.iceCandidatesQueue.clear();
 
     this.clearVideo();
     this.socket.emit('screen-share-status', { isSharing: false });
   }
 
   // Attach Stream to Stage Video Element
-  attachStreamToVideo(stream) {
+  attachStreamToVideo(stream, isLocalStream = false) {
     if (this.videoElement) {
       this.videoElement.srcObject = stream;
       this.videoElement.style.display = 'block';
+
+      if (isLocalStream) {
+        // Host should always be muted locally to prevent feedback echo
+        this.videoElement.muted = true;
+      } else {
+        this.videoElement.muted = false;
+      }
 
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
@@ -212,7 +248,7 @@ class WebRTCManager {
           console.warn('[Autoplay Policy] Video play blocked, attempting muted playback:', err);
           this.videoElement.muted = true;
           this.videoElement.play().then(() => {
-            if (typeof showToast === 'function') {
+            if (typeof showToast === 'function' && !isLocalStream) {
               showToast('🔊 Click anywhere on stage to unmute video audio!');
             }
           }).catch(e => console.error('Video play failed:', e));

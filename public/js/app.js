@@ -154,6 +154,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (roomState.currentUrl) {
       player.loadUrl(roomState.currentUrl, roomState.mode || 'screenshare', false);
     }
+
+    if (roomState.isScreenSharing) {
+      document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
+      document.getElementById('placeholder-desc').textContent = 'Connecting low-latency audio & video stream...';
+    }
+  });
+
+  // Promoted to Host Handler
+  socket.on('promoted-to-host', () => {
+    isHost = true;
+    player.isHost = true;
+
+    userRoleBadge.className = 'role-badge host-badge';
+    userRoleBadge.innerHTML = '<span>🎬 HOST</span>';
+    document.getElementById('host-screenshare-cta').classList.remove('hidden');
+    document.getElementById('guest-waiting-cta').classList.add('hidden');
+    document.getElementById('address-bar-status').classList.remove('hidden');
+    document.getElementById('host-controls-deck').style.display = 'flex';
+    document.body.classList.remove('is-guest-user');
+
+    showToast('👑 You are now the Director Host of this Theatre!');
+    addSystemChatMessage('👑 You have been promoted to Room Host!');
+  });
+
+  // Host Changed Notice
+  socket.on('host-changed', ({ newHostUsername }) => {
+    addSystemChatMessage(`🎬 ${newHostUsername} is now the Director Host!`);
   });
 
   // Join Error
