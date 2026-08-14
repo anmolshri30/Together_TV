@@ -220,6 +220,18 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Guest Requests Stream directly from Host
+  socket.on('request-host-stream', () => {
+    const code = socket.roomCode;
+    if (!code) return;
+    const room = rooms.get(code);
+    if (!room || !room.hostSocketId) return;
+
+    io.to(room.hostSocketId).emit('guest-requested-stream', {
+      guestSocketId: socket.id
+    });
+  });
+
   // Media Playback Sync (Play / Pause / Seek)
   socket.on('sync-playback', ({ action, time }) => {
     const code = socket.roomCode;

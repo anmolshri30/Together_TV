@@ -158,6 +158,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (roomState.isScreenSharing) {
       document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
       document.getElementById('placeholder-desc').textContent = 'Connecting low-latency audio & video stream...';
+
+      // Explicitly request WebRTC stream from Host
+      console.log('[Guest] Requesting active WebRTC stream from host...');
+      socket.emit('request-host-stream');
     }
   });
 

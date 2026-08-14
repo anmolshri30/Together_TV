@@ -98,6 +98,14 @@ class WebRTCManager {
       }
     });
 
+    // Guest Requests Stream (Host side)
+    this.socket.on('guest-requested-stream', ({ guestSocketId }) => {
+      if (this.isSharing && this.localStream) {
+        console.log(`[WebRTC Host] Guest ${guestSocketId} requested stream. Sending WebRTC offer...`);
+        this.connectToSingleUser(guestSocketId);
+      }
+    });
+
     // Receive ICE Candidate
     this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
       const pc = this.peerConnections.get(senderSocketId);
@@ -148,8 +156,13 @@ class WebRTCManager {
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC ICE State] ${targetSocketId}: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        this.clearVideo();
+      if (pc.iceConnectionState === 'failed') {
+        console.warn(`[WebRTC] Connection failed for ${targetSocketId}, attempting ICE restart...`);
+        if (typeof pc.restartIce === 'function') {
+          pc.restartIce();
+        }
+      } else if (pc.iceConnectionState === 'disconnected') {
+        console.warn(`[WebRTC] ICE Connection disconnected for ${targetSocketId}`);
       }
     };
 
