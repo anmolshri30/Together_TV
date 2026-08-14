@@ -22,7 +22,23 @@ class WebRTCManager {
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:stun.services.mozilla.com' },
-        { urls: 'stun:global.stun.twilio.com:3478' }
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        // TURN Relay Servers for NAT & Strict Firewall Traversal over Internet
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
       ]
     };
 
@@ -150,6 +166,14 @@ class WebRTCManager {
   // Start Screen Share (Host Only)
   async startScreenShare(userList = []) {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        if (typeof showToast === 'function') {
+          showToast('⚠️ Screen sharing requires HTTPS! Please access site via https://');
+        }
+        alert('WebRTC Screen Sharing is blocked on unencrypted HTTP connections across the internet. Please use HTTPS (e.g. https://yourdomain.com)');
+        return false;
+      }
+
       console.log('[WebRTC Direct] Requesting getDisplayMedia with audio...');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
