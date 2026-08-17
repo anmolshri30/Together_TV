@@ -3,37 +3,29 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const cors = require('cors');
-const { ExpressPeerServer } = require('peer');
 
 const app = express();
 
-// Fix #2: Trust proxy so x-forwarded-proto HTTPS redirect works behind GoDaddy / Render / Nginx
+// Trust reverse proxy (Render, GoDaddy, Nginx, Cloudflare)
 app.set('trust proxy', 1);
 
 app.use(cors());
 
 // Automatically redirect http:// to https:// on production deployments
 app.use((req, res, next) => {
-  if (req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'] !== 'https') {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  if (forwardedProto && forwardedProto !== 'https') {
     return res.redirect(301, `https://${req.headers.host}${req.url}`);
   }
   next();
 });
 
+// Serve static frontend files
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 
-// Mount PeerJS Server on /peerjs for reliable WebRTC signaling on custom domains
-const peerServer = ExpressPeerServer(server, {
-  debug: true,
-  path: '/peerapp',
-  proxied: true,
-  allow_discovery: true
-});
-app.use('/peerjs', peerServer);
-
-// Fix #2: Add pingTimeout, pingInterval, allowEIO3 for reverse proxy & legacy client compatibility
+// Socket.IO production configuration
 const io = new Server(server, {
   cors: {
     origin: '*',
@@ -42,11 +34,16 @@ const io = new Server(server, {
   allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000,
+  connectTimeout: 45000,
   transports: ['websocket', 'polling']
 });
 
-// Store rooms in memory
+// In-memory room store
+// roomCode -> { roomCode, hostSocketId, hostUsername, currentUrl, mode, isPlaying, currentTime, lightsDimmed, isScreenSharing, users: Map }
 const rooms = new Map();
+
+// Maximum participants: 1 Host + 3 Guests = 4 Total
+const MAX_ROOM_CAPACITY = 4;
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -58,34 +55,33 @@ function generateRoomCode() {
 }
 
 io.on('connection', (socket) => {
-  console.log(`[Socket Connected] ID: ${socket.id} | Transport: ${socket.conn.transport.name}`);
+  console.log(`[Socket Connected] ID: ${socket.id} | Transport: ${socket.conn.transport.name} | RemoteIP: ${socket.handshake.address}`);
 
-  // Log transport upgrades (polling -> websocket)
   socket.conn.on('upgrade', (transport) => {
     console.log(`[Socket Upgraded] ID: ${socket.id} -> ${transport.name}`);
   });
 
-  // Create Room (Host)
+  // ==================== 1. CREATE ROOM (HOST) ====================
   socket.on('create-room', ({ username }) => {
     const roomCode = generateRoomCode();
-    const user = {
+    const hostUser = {
       socketId: socket.id,
-      username: username || 'Director Host 🎬',
+      username: (username || 'Director Host 🎬').trim(),
       isHost: true,
-      peerId: null
+      joinedAt: Date.now()
     };
 
     const room = {
       roomCode,
       hostSocketId: socket.id,
-      hostPeerId: null,
+      hostUsername: hostUser.username,
       currentUrl: 'https://www.youtube.com/embed/aqz-KE-bpKQ?enablejsapi=1',
       mode: 'screenshare',
       isPlaying: false,
       currentTime: 0,
       lightsDimmed: false,
       isScreenSharing: false,
-      users: new Map([[socket.id, user]])
+      users: new Map([[socket.id, hostUser]])
     };
 
     rooms.set(roomCode, room);
@@ -95,7 +91,7 @@ io.on('connection', (socket) => {
     socket.emit('room-created', {
       roomCode,
       isHost: true,
-      user,
+      user: hostUser,
       roomState: {
         currentUrl: room.currentUrl,
         mode: room.mode,
@@ -107,27 +103,108 @@ io.on('connection', (socket) => {
       }
     });
 
-    console.log(`[Room Created] ${roomCode} by ${user.username}`);
+    console.log(`[Room Created] ${roomCode} by ${hostUser.username} (${socket.id})`);
   });
 
-  // Join Room (Participant)
+  // ==================== 2. JOIN ROOM (GUEST - MAX 3 GUESTS) ====================
   socket.on('join-room', ({ roomCode, username }) => {
     const code = (roomCode || '').trim().toUpperCase();
     const room = rooms.get(code);
 
     if (!room) {
-      socket.emit('join-error', { message: 'Theatre Room Code not found! Double check your ticket code.' });
+      socket.emit('join-error', {
+        code: 'ROOM_NOT_FOUND',
+        message: 'Theatre Room Code not found! Double check your ticket code.'
+      });
       return;
     }
 
-    const user = {
+    // Step 9: Room capacity check - 1 Host + Max 3 Guests = Max 4 Users
+    if (room.users.size >= MAX_ROOM_CAPACITY) {
+      console.warn(`[Room Full] ${socket.id} rejected from ${code}. Current capacity: ${room.users.size}/${MAX_ROOM_CAPACITY}`);
+      socket.emit('join-error', {
+        code: 'ROOM_FULL',
+        message: 'This room is full. Maximum 3 guests are allowed.'
+      });
+      return;
+    }
+
+    const guestUser = {
       socketId: socket.id,
-      username: username || `VIP Guest #${Math.floor(Math.random() * 900 + 100)} 🎟️`,
+      username: (username || `VIP Guest #${Math.floor(Math.random() * 900 + 100)} 🎟️`).trim(),
       isHost: false,
-      peerId: null
+      joinedAt: Date.now()
     };
 
-    room.users.set(socket.id, user);
+    room.users.set(socket.id, guestUser);
+    socket.join(code);
+    socket.roomCode = code;
+
+    const userList = Array.from(room.users.values());
+
+    // Send full current room state to joining guest
+    socket.emit('room-joined', {
+      roomCode: code,
+      isHost: false,
+      user: guestUser,
+      hostSocketId: room.hostSocketId,
+      roomState: {
+        currentUrl: room.currentUrl,
+        mode: room.mode,
+        isPlaying: room.isPlaying,
+        currentTime: room.currentTime,
+        lightsDimmed: room.lightsDimmed,
+        isScreenSharing: room.isScreenSharing,
+        users: userList
+      }
+    });
+
+    // Notify other participants in room
+    socket.to(code).emit('user-joined', {
+      user: guestUser,
+      users: userList
+    });
+
+    console.log(`[User Joined] ${guestUser.username} (${socket.id}) joined ${code} [${userList.length}/${MAX_ROOM_CAPACITY}]`);
+  });
+
+  // ==================== 3. REJOIN ROOM (RECONNECT RECOVERY) ====================
+  socket.on('rejoin-room', ({ roomCode, username, wasHost }) => {
+    const code = (roomCode || '').trim().toUpperCase();
+    const room = rooms.get(code);
+
+    if (!room) {
+      socket.emit('rejoin-error', {
+        code: 'ROOM_EXPIRED',
+        message: 'Your previous room has ended. Please create or join a new one.'
+      });
+      return;
+    }
+
+    // Determine if this reconnecting user should be host
+    let isUserHost = false;
+    if (wasHost && (!room.hostSocketId || !room.users.has(room.hostSocketId))) {
+      isUserHost = true;
+      room.hostSocketId = socket.id;
+    }
+
+    // If room is already at capacity with other active sockets, reject
+    if (!room.users.has(socket.id) && room.users.size >= MAX_ROOM_CAPACITY) {
+      socket.emit('join-error', {
+        code: 'ROOM_FULL',
+        message: 'This room is full. Maximum 3 guests are allowed.'
+      });
+      return;
+    }
+
+    const restoredUser = {
+      socketId: socket.id,
+      username: (username || (isUserHost ? 'Director Host 🎬' : 'Reconnected Guest 🎟️')).trim(),
+      isHost: isUserHost,
+      joinedAt: Date.now()
+    };
+
+    room.users.set(socket.id, restoredUser);
     socket.join(code);
     socket.roomCode = code;
 
@@ -135,10 +212,9 @@ io.on('connection', (socket) => {
 
     socket.emit('room-joined', {
       roomCode: code,
-      isHost: false,
-      user,
+      isHost: isUserHost,
+      user: restoredUser,
       hostSocketId: room.hostSocketId,
-      hostPeerId: room.hostPeerId,
       roomState: {
         currentUrl: room.currentUrl,
         mode: room.mode,
@@ -151,92 +227,71 @@ io.on('connection', (socket) => {
     });
 
     socket.to(code).emit('user-joined', {
-      user,
+      user: restoredUser,
       users: userList
     });
 
-    console.log(`[User Joined] ${user.username} joined room ${code}`);
+    console.log(`[Rejoin Room] ${restoredUser.username} (${socket.id}) restored in ${code} (Host: ${isUserHost})`);
   });
 
-  // Fix #8: Handle room rejoin after socket reconnect
-  socket.on('rejoin-room', ({ roomCode, username }) => {
-    const code = (roomCode || '').trim().toUpperCase();
-    const room = rooms.get(code);
+  // ==================== 4. WEBRTC SIGNALING RELAY ====================
+  // Host -> Guest Offer
+  socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
+    if (!targetSocketId || !offer) return;
+    io.to(targetSocketId).emit('webrtc-offer', {
+      senderSocketId: socket.id,
+      offer
+    });
+  });
 
-    if (!room) {
-      socket.emit('rejoin-error', { message: 'Room no longer exists.' });
+  // Guest -> Host Answer
+  socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
+    if (!targetSocketId || !answer) return;
+    io.to(targetSocketId).emit('webrtc-answer', {
+      senderSocketId: socket.id,
+      answer
+    });
+  });
+
+  // Bidirectional ICE Candidate exchange
+  socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
+    if (!targetSocketId || !candidate) return;
+    io.to(targetSocketId).emit('webrtc-ice-candidate', {
+      senderSocketId: socket.id,
+      candidate
+    });
+  });
+
+  // Guest explicitly requests host's active WebRTC stream
+  socket.on('request-host-stream', () => {
+    const code = socket.roomCode;
+    if (!code) {
+      console.warn(`[request-host-stream] Socket ${socket.id} has no roomCode yet`);
       return;
     }
-
-    const user = {
-      socketId: socket.id,
-      username: username || 'Reconnected Guest 🎟️',
-      isHost: false,
-      peerId: null
-    };
-
-    room.users.set(socket.id, user);
-    socket.join(code);
-    socket.roomCode = code;
-
-    const userList = Array.from(room.users.values());
-
-    socket.emit('room-joined', {
-      roomCode: code,
-      isHost: false,
-      user,
-      hostSocketId: room.hostSocketId,
-      hostPeerId: room.hostPeerId,
-      roomState: {
-        currentUrl: room.currentUrl,
-        mode: room.mode,
-        isPlaying: room.isPlaying,
-        currentTime: room.currentTime,
-        lightsDimmed: room.lightsDimmed,
-        isScreenSharing: room.isScreenSharing,
-        users: userList
-      }
-    });
-
-    socket.to(code).emit('user-joined', { user, users: userList });
-    console.log(`[Rejoin] ${user.username} rejoined room ${code}`);
-  });
-
-  // Register Peer ID for WebRTC
-  socket.on('register-peer', ({ peerId }) => {
-    const code = socket.roomCode;
-    if (!code) return;
     const room = rooms.get(code);
-    if (!room) return;
+    if (!room || !room.hostSocketId) return;
 
-    const user = room.users.get(socket.id);
-    if (user) {
-      user.peerId = peerId;
-      if (user.isHost) {
-        room.hostPeerId = peerId;
-      }
-    }
-
-    io.to(code).emit('peer-registered', {
-      socketId: socket.id,
-      peerId,
-      isHost: user ? user.isHost : false,
-      users: Array.from(room.users.values())
+    console.log(`[Stream Request] Guest ${socket.id} requesting stream from Host ${room.hostSocketId} in ${code}`);
+    io.to(room.hostSocketId).emit('guest-requested-stream', {
+      guestSocketId: socket.id
     });
   });
 
-  // Host Screen Sharing State
+  // Host screen sharing status broadcast
   socket.on('screen-share-status', ({ isSharing }) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
     if (!room || room.hostSocketId !== socket.id) return;
 
-    room.isScreenSharing = isSharing;
-    io.to(code).emit('screen-share-status', { isSharing });
+    room.isScreenSharing = Boolean(isSharing);
+    io.to(code).emit('screen-share-status', { isSharing: room.isScreenSharing });
+    console.log(`[Screen Share Status] Room ${code}: isSharing = ${room.isScreenSharing}`);
   });
 
-  // Host Navigates URL / Mode
+  // ==================== 5. SYNCHRONIZED NAVIGATION & MEDIA ====================
+  // Host navigates URL or switches Stage Tab (screenshare | youtube | web)
   socket.on('sync-navigation', ({ url, mode }) => {
     const code = socket.roomCode;
     if (!code) return;
@@ -253,45 +308,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Direct Socket.io WebRTC Signaling (Offer / Answer / ICE Candidate)
-  socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
-    io.to(targetSocketId).emit('webrtc-offer', {
-      senderSocketId: socket.id,
-      offer
-    });
-  });
-
-  socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
-    io.to(targetSocketId).emit('webrtc-answer', {
-      senderSocketId: socket.id,
-      answer
-    });
-  });
-
-  socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
-    io.to(targetSocketId).emit('webrtc-ice-candidate', {
-      senderSocketId: socket.id,
-      candidate
-    });
-  });
-
-  // Fix #7: Guest Requests Stream directly from Host (with server-side roomCode guard)
-  socket.on('request-host-stream', () => {
-    const code = socket.roomCode;
-    if (!code) {
-      console.warn(`[request-host-stream] Socket ${socket.id} has no roomCode yet — ignoring`);
-      return;
-    }
-    const room = rooms.get(code);
-    if (!room || !room.hostSocketId) return;
-
-    console.log(`[request-host-stream] Guest ${socket.id} requesting stream from host ${room.hostSocketId}`);
-    io.to(room.hostSocketId).emit('guest-requested-stream', {
-      guestSocketId: socket.id
-    });
-  });
-
-  // Media Playback Sync (Play / Pause / Seek)
+  // Host Play / Pause / Seek event
   socket.on('sync-playback', ({ action, time }) => {
     const code = socket.roomCode;
     if (!code) return;
@@ -305,12 +322,13 @@ io.on('connection', (socket) => {
     socket.to(code).emit('sync-playback', {
       action,
       time: room.currentTime,
+      timestamp: Date.now(),
       senderSocketId: socket.id
     });
   });
 
-  // Continuous Heartbeat Sync (Host -> Room)
-  socket.on('sync-heartbeat', ({ time, isPlaying, mode }) => {
+  // Host continuous heartbeat (every ~1.5s)
+  socket.on('sync-heartbeat', ({ time, isPlaying, mode, videoId }) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
@@ -318,22 +336,26 @@ io.on('connection', (socket) => {
 
     room.currentTime = time;
     room.isPlaying = isPlaying;
+    if (mode) room.mode = mode;
 
     socket.to(code).emit('sync-heartbeat', {
       time,
       isPlaying,
-      mode
+      mode: room.mode,
+      videoId,
+      timestamp: Date.now()
     });
   });
 
-  // Toggle Dim Stage Lights
+  // ==================== 6. THEATRE INTERACTIONS ====================
+  // Dim Stage Lights Toggle
   socket.on('toggle-lights', ({ dimmed }) => {
     const code = socket.roomCode;
     if (!code) return;
     const room = rooms.get(code);
     if (!room) return;
 
-    room.lightsDimmed = dimmed;
+    room.lightsDimmed = Boolean(dimmed);
     io.to(code).emit('lights-toggled', { dimmed: room.lightsDimmed });
   });
 
@@ -355,7 +377,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Chat Message
+  // Chat message
   socket.on('send-chat', ({ text }) => {
     const code = socket.roomCode;
     if (!code) return;
@@ -363,20 +385,20 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     const user = room.users.get(socket.id);
-    if (!user || !text.trim()) return;
+    if (!user || !text || !text.trim()) return;
 
     const msgData = {
       senderId: socket.id,
       username: user.username,
       isHost: user.isHost,
-      text: text.trim(),
+      text: text.trim().substring(0, 500),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     io.to(code).emit('receive-chat', msgData);
   });
 
-  // Disconnect
+  // ==================== 7. DISCONNECT & CLEANUP ====================
   socket.on('disconnect', (reason) => {
     console.log(`[Socket Disconnected] ID: ${socket.id} | Reason: ${reason}`);
     const code = socket.roomCode;
@@ -390,18 +412,23 @@ io.on('connection', (socket) => {
 
     if (room.users.size === 0) {
       rooms.delete(code);
-      console.log(`[Room Closed] ${code} deleted (empty)`);
+      console.log(`[Room Deleted] ${code} is now empty and has been removed.`);
     } else {
+      // If host disconnected, promote the next oldest participant to Host
       if (room.hostSocketId === socket.id) {
-        // Host left — promote next user
         room.isScreenSharing = false;
         const nextSocketId = room.users.keys().next().value;
         const newHost = room.users.get(nextSocketId);
         if (newHost) {
           newHost.isHost = true;
           room.hostSocketId = nextSocketId;
+          room.hostUsername = newHost.username;
           io.to(nextSocketId).emit('promoted-to-host');
-          io.to(code).emit('host-changed', { newHostUsername: newHost.username, newHostSocketId: nextSocketId });
+          io.to(code).emit('host-changed', {
+            newHostUsername: newHost.username,
+            newHostSocketId: nextSocketId
+          });
+          console.log(`[Host Promoted] ${newHost.username} (${nextSocketId}) is now host of ${code}`);
         }
       }
 
@@ -415,15 +442,15 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`
   ======================================================
-  🍿 CINE-PARTY WATCH PARTY & SHARED BROWSER IS RUNNING! 🎬
+  🍿 CINE-PARTY THEATRE & SHARED BROWSER RUNNING! 🎬
   ======================================================
-  Local Server: http://localhost:${PORT}
-  PeerServer WebRTC: /peerjs mounted natively
-  Room Signaling: Socket.io Enabled
-  Trust Proxy: ON | EIO3 Compat: ON
+  Port: ${PORT} | Bind: 0.0.0.0
+  Max Room Capacity: ${MAX_ROOM_CAPACITY} (1 Host + 3 Guests)
+  Signaling: Socket.IO (transports: websocket, polling)
+  Proxy Trust: Enabled (1 hop)
   ======================================================
   `);
 });

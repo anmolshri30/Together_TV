@@ -10,9 +10,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;700;800;900&display=swap" rel="stylesheet">
 
-  <!-- Socket.io, PeerJS & YouTube API Client Libraries -->
+  <!-- Socket.io & YouTube IFrame API Client Libraries -->
   <script src="/socket.io/socket.io.js"></script>
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://www.youtube.com/iframe_api"></script>
 
   <link rel="stylesheet" href="css/style.css">
@@ -76,12 +75,12 @@
             </div>
             <div class="ticket-body">
               <h3>Create a Room</h3>
-              <p>Start a new theatre room, share web browser pages, YouTube videos, or screen audio/video live with friends.</p>
+              <p>Start a new cinema theatre room (1 Host + up to 3 Guests). Share browser tabs, YouTube media, and screen audio live.</p>
               <ul class="ticket-features">
-                <li><span class="check">✓</span> Instant Room Code</li>
-                <li><span class="check">✓</span> Chrome Browser Window</li>
-                <li><span class="check">✓</span> HD Screen & Audio Share</li>
-                <li><span class="check">✓</span> Full Host Controls</li>
+                <li><span class="check">✓</span> 1 Host + Max 3 Guests (4 Total)</li>
+                <li><span class="check">✓</span> Chrome-Style Browser Stage</li>
+                <li><span class="check">✓</span> HD Screen & Tab Audio Share</li>
+                <li><span class="check">✓</span> Synchronized YouTube Playback</li>
               </ul>
             </div>
             <div class="ticket-footer">
@@ -317,7 +316,7 @@
               <span>💬 Theatre Chat</span>
             </button>
             <button class="sidebar-tab" id="tab-sidebar-audience" data-side="audience">
-              <span>👥 Audience (<span id="audience-count">1</span>)</span>
+              <span>👥 Audience (<span id="audience-count">1</span>/4)</span>
             </button>
           </div>
 
@@ -356,7 +355,7 @@
           <!-- Audience List Section -->
           <div id="side-panel-audience" class="sidebar-panel">
             <div class="audience-header">
-              <h4>Connected Viewers</h4>
+              <h4>Connected Viewers (Max 4)</h4>
             </div>
             <ul id="audience-list" class="audience-list-ul">
               <!-- Dynamically populated -->

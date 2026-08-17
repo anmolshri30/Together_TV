@@ -1,6 +1,7 @@
 /* ==========================================================================
    SYNCHRONIZED MEDIA & BROWSER URL MANAGER
-   Handles Continuous YouTube Sync, Host-Only Play/Pause Control, & Address Bar
+   Continuous YouTube Sync with Latency-Compensated Drift Correction
+   Host-Only Play/Pause/Seek Controls, Chrome Address Bar & Bookmarks
    ========================================================================== */
 
 class PlayerManager {
@@ -8,9 +9,11 @@ class PlayerManager {
     this.socket = socket;
     this.currentMode = 'screenshare'; // 'screenshare' | 'youtube' | 'web'
     this.currentUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ';
+    this.currentVideoId = 'aqz-KE-bpKQ';
     this.ytPlayer = null;
     this.isHost = false;
-    this.isSyncing = false; // Prevent echo loops during socket updates
+    this.isSyncing = false; // Prevent echo broadcast loops during remote sync updates
+    this.pendingVideoId = null;
 
     this.webIframe = document.getElementById('web-view-iframe');
     this.urlInput = document.getElementById('chrome-url-input');
@@ -26,14 +29,17 @@ class PlayerManager {
   // Safe helper for YT.PlayerState enum
   getYTStates() {
     return {
+      UNSTARTED: -1,
+      ENDED: 0,
       PLAYING: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.PLAYING : 1,
       PAUSED: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.PAUSED : 2,
-      BUFFERING: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.BUFFERING : 3
+      BUFFERING: (window.YT && window.YT.PlayerState) ? window.YT.PlayerState.BUFFERING : 3,
+      CUED: 5
     };
   }
 
   init() {
-    // Listen for Chrome address bar navigation
+    // Chrome address bar navigation
     const btnNav = document.getElementById('btn-navigate-url');
     if (btnNav) {
       btnNav.addEventListener('click', () => {
@@ -47,7 +53,7 @@ class PlayerManager {
       });
     }
 
-    // Tab switching event listeners (Allows tab switching for all users)
+    // Tab switching event listeners
     document.querySelectorAll('.chrome-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
         const mode = tab.getAttribute('data-tab');
@@ -55,7 +61,7 @@ class PlayerManager {
       });
     });
 
-    // Bookmarks Pills (Host only)
+    // Quick Bookmarks Pills (Host only)
     const bmYoutube = document.getElementById('bm-youtube-demo');
     if (bmYoutube) {
       bmYoutube.addEventListener('click', () => {
@@ -104,21 +110,42 @@ class PlayerManager {
     }
 
     // Socket Listener: Continuous Heartbeat Sync (Guest Side)
-    this.socket.on('sync-heartbeat', ({ time, isPlaying }) => {
+    this.socket.on('sync-heartbeat', ({ time, isPlaying, mode, videoId, timestamp }) => {
       if (this.isHost || !this.ytPlayer) return;
-      this.isSyncing = true;
 
+      // If host switched video ID, load new video
+      if (videoId && videoId !== this.currentVideoId) {
+        console.log(`[YouTube Sync] Video changed by host to ${videoId}`);
+        this.currentVideoId = videoId;
+        if (typeof this.ytPlayer.loadVideoById === 'function') {
+          this.ytPlayer.loadVideoById(videoId, time || 0);
+        }
+        return;
+      }
+
+      this.isSyncing = true;
       const ytStates = this.getYTStates();
       const currTime = typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
       const state = typeof this.ytPlayer.getPlayerState === 'function' ? this.ytPlayer.getPlayerState() : -1;
 
-      // Continuous drift correction (< 0.8 second threshold)
-      if (typeof time === 'number' && Math.abs(currTime - time) > 0.8) {
-        console.log(`[Continuous Sync] Correcting guest drift from ${currTime.toFixed(1)}s to ${time.toFixed(1)}s`);
-        this.ytPlayer.seekTo(time, true);
+      // Step 12: Calculate expected playback position using elapsed network latency
+      const elapsedLatency = timestamp ? Math.max(0, (Date.now() - timestamp) / 1000) : 0;
+      const expectedTime = isPlaying ? (time + elapsedLatency) : time;
+      const drift = Math.abs(currTime - expectedTime);
+
+      // Apply proportional drift correction
+      if (typeof expectedTime === 'number' && !isNaN(expectedTime)) {
+        if (drift > 2.0) {
+          // Large drift (> 2.0s) -> immediate seek
+          console.log(`[YouTube Sync] Correcting large drift (${drift.toFixed(2)}s) -> seeking to ${expectedTime.toFixed(1)}s`);
+          this.ytPlayer.seekTo(expectedTime, true);
+        } else if (drift > 0.8) {
+          // Moderate drift (0.8s - 2.0s) -> gentle seek without jitter
+          this.ytPlayer.seekTo(expectedTime, true);
+        }
       }
 
-      // Continuous play/pause enforcement
+      // Synchronize play / pause state
       if (isPlaying && state !== ytStates.PLAYING && state !== ytStates.BUFFERING) {
         if (typeof this.ytPlayer.playVideo === 'function') this.ytPlayer.playVideo();
         this.updateDeckPlayPauseUI(true);
@@ -137,33 +164,42 @@ class PlayerManager {
     this.startHostHeartbeatLoop();
   }
 
-  // Continuous Heartbeat Loop (Host Side)
+  // Continuous Heartbeat Loop (Host Side - every 1.5s)
   startHostHeartbeatLoop() {
     setInterval(() => {
       const ytStates = this.getYTStates();
       if (this.isHost && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' && this.currentMode === 'youtube') {
         const time = this.ytPlayer.getCurrentTime();
         const isPlaying = (this.ytPlayer.getPlayerState() === ytStates.PLAYING);
+
+        // Update seek bar progress in host control deck
         if (this.seekBar && typeof this.ytPlayer.getDuration === 'function') {
           const duration = this.ytPlayer.getDuration();
           if (duration > 0) {
             this.seekBar.value = (time / duration) * 100;
           }
         }
-        this.socket.emit('sync-heartbeat', { time, isPlaying, mode: this.currentMode });
+
+        this.socket.emit('sync-heartbeat', {
+          time,
+          isPlaying,
+          mode: this.currentMode,
+          videoId: this.currentVideoId,
+          timestamp: Date.now()
+        });
       }
     }, 1500);
   }
 
-  // Load YouTube API dynamically
+  // Load YouTube IFrame API dynamically
   initYouTubeAPI() {
     const setupPlayer = () => {
       if (window.YT && window.YT.Player) {
-        console.log('[YouTube API] Initializing YT.Player...');
+        console.log('[YouTube API] Initializing YT.Player instance...');
         this.ytPlayer = new window.YT.Player('yt-player-container', {
           height: '100%',
           width: '100%',
-          videoId: 'aqz-KE-bpKQ',
+          videoId: this.currentVideoId,
           playerVars: {
             'autoplay': 0,
             'controls': 1,
@@ -174,9 +210,10 @@ class PlayerManager {
           },
           events: {
             'onReady': () => {
-              console.log('[YouTube Player API] Synced & Ready!');
+              console.log('[YouTube Player API] Ready & Synced!');
               if (this.pendingVideoId && typeof this.ytPlayer.loadVideoById === 'function') {
                 this.ytPlayer.loadVideoById(this.pendingVideoId);
+                this.currentVideoId = this.pendingVideoId;
                 this.pendingVideoId = null;
               }
             },
@@ -201,18 +238,18 @@ class PlayerManager {
 
     const state = event.data;
     const ytStates = this.getYTStates();
-    const currentTime = this.ytPlayer ? this.ytPlayer.getCurrentTime() : 0;
+    const currentTime = this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
 
     if (state === ytStates.PLAYING) {
       this.updateDeckPlayPauseUI(true);
       if (this.isHost) {
-        console.log(`[Host Action] Play at ${currentTime}s -> Broadcasting to all guests`);
+        console.log(`[Host YouTube] Play at ${currentTime.toFixed(1)}s -> Broadcasting to room`);
         this.socket.emit('sync-playback', { action: 'play', time: currentTime });
       }
     } else if (state === ytStates.PAUSED) {
       this.updateDeckPlayPauseUI(false);
       if (this.isHost) {
-        console.log(`[Host Action] Pause at ${currentTime}s -> Broadcasting to all guests`);
+        console.log(`[Host YouTube] Pause at ${currentTime.toFixed(1)}s -> Broadcasting to room`);
         this.socket.emit('sync-playback', { action: 'pause', time: currentTime });
       }
     }
@@ -224,6 +261,7 @@ class PlayerManager {
 
     const ytStates = this.getYTStates();
     const state = typeof this.ytPlayer.getPlayerState === 'function' ? this.ytPlayer.getPlayerState() : -1;
+
     if (state === ytStates.PLAYING) {
       this.ytPlayer.pauseVideo();
       this.updateDeckPlayPauseUI(false);
@@ -257,7 +295,7 @@ class PlayerManager {
     this.loadUrl(targetUrl, mode, true);
   }
 
-  // Extract YouTube ID using robust regular expression
+  // Robust YouTube ID Extraction
   extractVideoId(url) {
     if (!url) return '';
     const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -279,6 +317,7 @@ class PlayerManager {
     if (mode === 'youtube') {
       const videoId = this.extractVideoId(url);
       if (videoId) {
+        this.currentVideoId = videoId;
         if (this.ytPlayer && typeof this.ytPlayer.loadVideoById === 'function') {
           this.ytPlayer.loadVideoById(videoId);
         } else {
@@ -321,25 +360,27 @@ class PlayerManager {
     }
   }
 
-  // Handle incoming playback sync from socket
+  // Handle incoming playback sync from socket (play/pause/seek)
   handleSyncPlayback(action, time) {
-    console.log(`[Player Remote Sync Action] ${action} at ${time}s`);
+    console.log(`[Player Sync Action] ${action} at ${time}s`);
     this.isSyncing = true;
 
-    if (this.ytPlayer && typeof this.ytPlayer.playVideo === 'function') {
+    if (this.ytPlayer) {
       const currTime = typeof this.ytPlayer.getCurrentTime === 'function' ? this.ytPlayer.getCurrentTime() : 0;
 
       if (typeof time === 'number' && Math.abs(currTime - time) > 0.8) {
-        this.ytPlayer.seekTo(time, true);
+        if (typeof this.ytPlayer.seekTo === 'function') {
+          this.ytPlayer.seekTo(time, true);
+        }
       }
 
-      if (action === 'play') {
+      if (action === 'play' && typeof this.ytPlayer.playVideo === 'function') {
         this.ytPlayer.playVideo();
         this.updateDeckPlayPauseUI(true);
-      } else if (action === 'pause') {
+      } else if (action === 'pause' && typeof this.ytPlayer.pauseVideo === 'function') {
         this.ytPlayer.pauseVideo();
         this.updateDeckPlayPauseUI(false);
-      } else if (action === 'seek') {
+      } else if (action === 'seek' && typeof this.ytPlayer.seekTo === 'function') {
         this.ytPlayer.seekTo(time, true);
       }
     }

@@ -1,15 +1,12 @@
 /* ==========================================================================
    CINE-PARTY MAIN APPLICATION CONTROLLER
-   Handles Socket.io Rooms, Velvet Curtain Animations, Reactions & UI Flow
-   Fix #1: io() transport config with reconnection & timeout
-   Fix #5: Socket lifecycle handlers (connect_error, disconnect, reconnect)
-   Fix #7: Delayed request-host-stream emit
-   Fix #8: sessionStorage room recovery on reconnect
+   Handles Socket.io Rooms, Velvet Curtain Animations, Reactions, Chat & UI Flow
+   Production Reconnect Recovery, Room Limits & WebRTC Diagnostics Panel
    ========================================================================== */
 
 document.addEventListener('DOMContentLoaded', () => {
 
-  // Fix #1: Explicit transport order, reconnection settings, timeout tuning
+  // Step 3: Dynamic Socket.io connection utilizing current origin (works on localhost, Render, GoDaddy)
   const socket = io({
     transports: ['websocket', 'polling'],
     reconnection: true,
@@ -65,62 +62,115 @@ document.addEventListener('DOMContentLoaded', () => {
   const audienceListUl = document.getElementById('audience-list');
   const audienceCountEl = document.getElementById('audience-count');
 
-  // ==================== FIX #5: SOCKET LIFECYCLE HANDLERS ====================
+  // ==================== STEP 16: PRODUCTION DEBUG PANEL ====================
+  const urlParams = new URLSearchParams(window.location.search);
+  const isDebugMode = urlParams.get('debug') === '1' || localStorage.getItem('cineparty_debug') === '1';
 
+  let debugPanel = null;
+  if (isDebugMode) {
+    debugPanel = document.createElement('div');
+    debugPanel.id = 'debug-diagnostics-panel';
+    debugPanel.className = 'debug-panel';
+    document.body.appendChild(debugPanel);
+    console.log('[Debug Mode Active] Diagnostic HUD mounted in viewport.');
+  }
+
+  function updateDebugPanel() {
+    if (!isDebugMode || !debugPanel) return;
+
+    const transportName = socket.connected && socket.io && socket.io.engine && socket.io.engine.transport ? socket.io.engine.transport.name : 'none';
+    const peerDiagnostics = webrtc.getPeerDiagnostics();
+
+    let peersHtml = '';
+    if (peerDiagnostics.length === 0) {
+      peersHtml = '<div class="debug-row muted">No active WebRTC peers</div>';
+    } else {
+      peerDiagnostics.forEach((p, idx) => {
+        peersHtml += `
+          <div class="debug-peer-card">
+            <div class="debug-peer-header">Peer #${idx + 1} (${p.socketId.substring(0, 6)}...):</div>
+            <div class="debug-subrow">Conn: <span class="badge-${p.connectionState}">${p.connectionState}</span></div>
+            <div class="debug-subrow">ICE: <span class="badge-${p.iceConnectionState}">${p.iceConnectionState}</span></div>
+            <div class="debug-subrow">Sig: <span>${p.signalingState}</span></div>
+            <div class="debug-subrow">Media: Video ${p.hasRemoteVideo ? '✅' : '❌'} | Audio ${p.hasRemoteAudio ? '✅' : '❌'}</div>
+          </div>
+        `;
+      });
+    }
+
+    debugPanel.innerHTML = `
+      <div class="debug-header">🛠️ Cine-Party Diagnostics</div>
+      <div class="debug-row">Socket: <strong class="${socket.connected ? 'text-green' : 'text-red'}">${socket.connected ? 'CONNECTED' : 'DISCONNECTED'}</strong> (${transportName})</div>
+      <div class="debug-row">Role: <strong>${isHost ? '🎬 HOST' : '🎟️ GUEST'}</strong></div>
+      <div class="debug-row">Room: <strong>${currentRoomCode || 'None'}</strong> (${roomUsers.length}/4)</div>
+      <div class="debug-row">Screen Share: <strong>${webrtc.isSharing ? 'ACTIVE' : 'OFF'}</strong></div>
+      <div class="debug-section-title">WebRTC Peers (${peerDiagnostics.length}/3):</div>
+      ${peersHtml}
+    `;
+  }
+
+  if (isDebugMode) {
+    setInterval(updateDebugPanel, 1000);
+    webrtc.onDiagnosticsUpdate = updateDebugPanel;
+  }
+
+  // ==================== SOCKET.IO LIFECYCLE HANDLERS ====================
   socket.on('connect', () => {
-    console.log(`[Socket] Connected! ID: ${socket.id} | Transport: ${socket.io.engine.transport.name}`);
+    const transportName = socket.io.engine.transport.name;
+    console.log(`[Socket] Connected! ID: ${socket.id} | Transport: ${transportName}`);
+    updateDebugPanel();
 
-    // Fix #8: On reconnect, if we were in a room, rejoin it
+    // Step 11: On reconnect, restore room session if stored in sessionStorage
     const savedRoom = sessionStorage.getItem('cp_roomCode');
     const savedName = sessionStorage.getItem('cp_username');
     const savedIsHost = sessionStorage.getItem('cp_isHost') === 'true';
 
     if (savedRoom && currentRoomCode) {
-      console.log(`[Socket] Rejoining room ${savedRoom} after reconnect...`);
-      if (savedIsHost) {
-        socket.emit('create-room', { username: savedName || 'Director Host 🎬' });
-      } else {
-        socket.emit('rejoin-room', { roomCode: savedRoom, username: savedName });
-      }
+      console.log(`[Socket Reconnect] Restoring room session for ${savedRoom}...`);
+      socket.emit('rejoin-room', {
+        roomCode: savedRoom,
+        username: savedName,
+        wasHost: savedIsHost
+      });
     }
   });
 
-  // Log transport upgrades
   socket.io.engine.on('upgrade', (transport) => {
-    console.log(`[Socket] Transport upgraded to: ${transport.name}`);
+    console.log(`[Socket Upgrade] Transport upgraded to: ${transport.name}`);
+    updateDebugPanel();
   });
 
-  // Fix #5: Show user-friendly connection error toast
   socket.on('connect_error', (err) => {
-    console.error('[Socket] Connection error:', err.message);
-    showToast(`🔌 Connection error: ${err.message}. Retrying...`);
+    console.error('[Socket Connection Error]:', err.message);
+    updateDebugPanel();
+    showToast(`🔌 Connection notice: ${err.message}. Reconnecting...`);
   });
 
-  // Fix #5: Handle disconnection from server
   socket.on('disconnect', (reason) => {
-    console.warn(`[Socket] Disconnected: ${reason}`);
+    console.warn(`[Socket Disconnected] Reason: ${reason}`);
+    updateDebugPanel();
     if (reason === 'io server disconnect') {
-      // Server forced disconnect — try manual reconnect
       socket.connect();
     }
     if (currentRoomCode) {
-      showToast('📡 Connection lost. Reconnecting...');
+      showToast('📡 Connection momentarily lost. Re-establishing link...');
     }
   });
 
-  // Fix #5: Handle successful reconnect
   socket.on('reconnect', (attemptNumber) => {
-    console.log(`[Socket] Reconnected after ${attemptNumber} attempt(s)`);
-    showToast('✅ Reconnected to server!');
+    console.log(`[Socket Reconnected] Successfully reconnected on attempt ${attemptNumber}`);
+    showToast('✅ Reconnected to theatre server!');
+    updateDebugPanel();
   });
 
   socket.on('reconnect_failed', () => {
-    showToast('❌ Could not reconnect. Please refresh the page.');
+    showToast('❌ Reconnect failed. Please refresh your browser.');
+    updateDebugPanel();
   });
 
   // ==================== LOBBY & ROOM ROUTING ====================
 
-  // Create Room Click
+  // Create Room Click (Host)
   btnCreateRoom.addEventListener('click', () => {
     const name = usernameInput.value.trim() || 'Director Host 🎬';
     triggerCurtainTransition('Creating VIP Theatre Room...', () => {
@@ -128,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Join Room Click
+  // Join Room Click (Guest)
   btnJoinRoom.addEventListener('click', () => {
     const name = usernameInput.value.trim() || 'VIP Guest 🎟️';
     const code = roomCodeInput.value.trim();
@@ -166,7 +216,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentUser = userObj;
     player.isHost = hostStatus;
 
-    // Fix #8: Persist room info to sessionStorage for reconnect recovery
+    // Step 11: Store session details in sessionStorage
     sessionStorage.setItem('cp_roomCode', roomCode);
     sessionStorage.setItem('cp_username', userObj.username || '');
     sessionStorage.setItem('cp_isHost', hostStatus ? 'true' : 'false');
@@ -195,9 +245,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     openCurtains();
     showToast(`🍿 Welcome to Room ${roomCode}!`);
+    updateDebugPanel();
   }
 
-  // Exit Room — clear session storage
+  // Exit Room
   btnLeaveRoom.addEventListener('click', () => {
     triggerCurtainTransition('Exiting Theatre...', () => {
       sessionStorage.removeItem('cp_roomCode');
@@ -216,7 +267,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAudienceList(roomState.users);
   });
 
-  // Room Joined (Participant)
+  // Room Joined (Guest)
   socket.on('room-joined', ({ roomCode, isHost: hostFlag, user, roomState }) => {
     enterRoomView(roomCode, hostFlag, user, roomState);
     updateAudienceList(roomState.users);
@@ -226,25 +277,36 @@ document.addEventListener('DOMContentLoaded', () => {
       player.loadUrl(roomState.currentUrl, roomState.mode, false);
     }
 
+    // Step 10: Deterministic Stream Request Flow
     if (roomState.isScreenSharing) {
       document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
-      document.getElementById('placeholder-desc').textContent = 'Connecting live stream...';
+      document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
 
-      // Fix #7: Delay request-host-stream to allow server-side roomCode registration to complete
       setTimeout(() => {
-        console.log('[Guest] Requesting active WebRTC stream from host...');
+        console.log('[Guest] Requesting active WebRTC screen share from Host...');
         socket.emit('request-host-stream');
-      }, 600);
+      }, 500);
+    } else {
+      document.getElementById('placeholder-title').textContent = 'Host Screen Share Stage';
+      document.getElementById('placeholder-desc').textContent = 'Host has not started sharing yet.';
     }
   });
 
-  // Fix #8: Server says room no longer exists after rejoin attempt
-  socket.on('rejoin-error', () => {
+  // Step 9: Specific error handling (e.g. ROOM_FULL)
+  socket.on('join-error', ({ code, message }) => {
+    openCurtains();
+    if (code === 'ROOM_FULL') {
+      showToast('🚫 This room is full. Maximum 3 guests are allowed.');
+    } else {
+      showToast(`❌ ${message || 'Failed to join room'}`);
+    }
+  });
+
+  socket.on('rejoin-error', ({ message }) => {
     sessionStorage.removeItem('cp_roomCode');
     sessionStorage.removeItem('cp_username');
     sessionStorage.removeItem('cp_isHost');
-    showToast('⚠️ Your previous room has ended. Please create or join a new one.');
-    // Show home view
+    showToast(`⚠️ ${message || 'Room session expired.'}`);
     viewRoom.classList.remove('active');
     viewHome.classList.add('active');
     openCurtains();
@@ -266,17 +328,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     showToast('👑 You are now the Director Host of this Theatre!');
     addSystemChatMessage('👑 You have been promoted to Room Host!');
+    updateDebugPanel();
   });
 
-  // Host Changed Notice (for other guests)
+  // Host Changed Notice
   socket.on('host-changed', ({ newHostUsername }) => {
     addSystemChatMessage(`🎬 ${newHostUsername} is now the Director Host!`);
-  });
-
-  // Join Error
-  socket.on('join-error', ({ message }) => {
-    openCurtains();
-    showToast(`❌ ${message}`);
   });
 
   // User Joined Room Notice
@@ -284,22 +341,22 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAudienceList(users);
     addSystemChatMessage(`🎟️ ${user.username} entered the theatre!`);
 
-    // If host is screen sharing, initiate WebRTC stream to newly joined user
+    // If host is actively screen sharing, initiate stream offer to this new guest
     if (isHost && webrtc.isSharing && user.socketId) {
-      console.log(`[Host] New guest ${user.socketId} joined — connecting WebRTC stream`);
+      console.log(`[Host] New guest ${user.socketId} joined — connecting WebRTC stream...`);
       webrtc.connectToSingleUser(user.socketId);
     }
+    updateDebugPanel();
   });
 
   // User Left Room Notice
-  socket.on('user-left', ({ username, users }) => {
+  socket.on('user-left', ({ socketId, username, users }) => {
     updateAudienceList(users);
     addSystemChatMessage(`👋 ${username} left the theatre.`);
-  });
 
-  // Peer Registered
-  socket.on('peer-registered', ({ users }) => {
-    updateAudienceList(users);
+    // Clean up peer connection for departed user
+    webrtc.closeSinglePeerConnection(socketId);
+    updateDebugPanel();
   });
 
   // Screen Share Status Update
@@ -307,24 +364,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!isHost) {
       if (isSharing) {
         document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
-        document.getElementById('placeholder-desc').textContent = 'Connecting live stream...';
+        document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
       } else {
         document.getElementById('placeholder-title').textContent = 'Host Screen Share Stage';
-        document.getElementById('placeholder-desc').textContent = 'Waiting for host to start screen sharing... 🍿';
+        document.getElementById('placeholder-desc').textContent = 'Host has not started sharing yet.';
         webrtc.clearVideo();
       }
     }
+    updateDebugPanel();
   });
 
   // Sync Navigation (URL & Mode)
   socket.on('sync-navigation', ({ url, mode }) => {
     if (!isHost) {
       player.loadUrl(url, mode, false);
-      showToast(`🌐 Host navigated to ${mode.toUpperCase()} view`);
+      showToast(`🌐 Stage view updated to ${mode.toUpperCase()}`);
     }
   });
 
-  // Sync Playback (Play/Pause)
+  // Sync Playback (Play/Pause/Seek)
   socket.on('sync-playback', ({ action, time }) => {
     if (!isHost) {
       player.handleSyncPlayback(action, time);
@@ -348,10 +406,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ==================== SCREEN SHARE & HOST CONTROLS ====================
-
   async function handleScreenShareToggle() {
     if (!isHost) {
-      showToast('⚠️ Only the Room Host can start Screen Share!');
+      showToast('⚠️ Only the Room Host can broadcast screen & audio!');
       return;
     }
 
@@ -360,13 +417,13 @@ document.addEventListener('DOMContentLoaded', () => {
       deckShareText.textContent = 'Share Screen';
       showToast('⏹️ Screen sharing stopped.');
     } else {
-      const roomStateUsers = roomUsers || [];
-      const success = await webrtc.startScreenShare(roomStateUsers);
+      const currentParticipants = roomUsers || [];
+      const success = await webrtc.startScreenShare(currentParticipants);
       if (success) {
         deckShareText.textContent = 'Stop Share';
-        showToast('🍿 Screen & Audio Sharing Started Live!');
       }
     }
+    updateDebugPanel();
   }
 
   if (btnStartShareCta) btnStartShareCta.addEventListener('click', handleScreenShareToggle);
@@ -395,7 +452,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ==================== FLOATING EMOJI REACTION SYSTEM ====================
-
   document.querySelectorAll('.btn-emoji-react').forEach((btn) => {
     btn.addEventListener('click', () => {
       const emoji = btn.getAttribute('data-emoji');
@@ -419,7 +475,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==================== CHAT & AUDIENCE LIST ====================
-
   chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
@@ -435,11 +490,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const meta = document.createElement('div');
     meta.className = 'chat-meta';
-    // Sanitize username output to prevent XSS
-    const safeUsername = document.createTextNode(msg.username);
+
     const senderSpan = document.createElement('span');
     senderSpan.className = 'chat-sender';
-    senderSpan.appendChild(safeUsername);
+    senderSpan.textContent = msg.username;
 
     const timeSpan = document.createElement('span');
     timeSpan.className = 'chat-time';
@@ -478,20 +532,22 @@ document.addEventListener('DOMContentLoaded', () => {
     roomUsers.forEach((u) => {
       const li = document.createElement('li');
       li.className = 'audience-member';
-      // Use textContent for safe rendering
+
       const nameSpan = document.createElement('span');
       nameSpan.className = 'aud-name';
       nameSpan.textContent = u.username;
+
       const badgeSpan = document.createElement('span');
       badgeSpan.className = 'aud-badge';
       badgeSpan.textContent = u.isHost ? '🎬 Host' : '🎟️ Guest';
+
       li.appendChild(nameSpan);
       li.appendChild(badgeSpan);
       audienceListUl.appendChild(li);
     });
   }
 
-  // Sidebar Tab Switcher (Chat vs Audience)
+  // Sidebar Tab Switcher
   document.querySelectorAll('.sidebar-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       const targetSide = tab.getAttribute('data-side');
