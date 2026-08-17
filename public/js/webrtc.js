@@ -1,16 +1,18 @@
 /* ==========================================================================
    WEBRTC SCREEN & AUDIO SHARING MODULE (DIRECT SOCKET.IO SIGNALING)
    Native WebRTC RTCPeerConnection for Host -> Maximum 3 Guests Architecture
-   Production Diagnostics, ICE Candidate Queuing & Cross-Browser Screen Capture
+   Comprehensive Production Diagnostics with [HOST WEBRTC] / [GUEST WEBRTC] Logging
    ========================================================================== */
 
 class WebRTCManager {
   constructor(socket) {
     this.socket = socket;
     this.localStream = null;
+    this.remoteMediaStream = null; // Accumulated remote stream on guest
     this.peerConnections = new Map(); // targetSocketId -> RTCPeerConnection
     this.iceCandidatesQueue = new Map(); // targetSocketId -> Array of RTCIceCandidate
     this.isSharing = false;
+    this.isHost = false;
 
     this.videoElement = document.getElementById('remote-stream-video');
     this.placeholderEl = document.getElementById('screenshare-placeholder');
@@ -32,7 +34,7 @@ class WebRTCManager {
         { urls: 'stun:stun.cloudflare.com:3478' },
         // Twilio Public STUN
         { urls: 'stun:global.stun.twilio.com:3478' },
-        // Metered.ca OpenRelay TURN Fallback (Ports 80 & 443 TCP/UDP for symmetric NAT/firewalls)
+        // Metered.ca OpenRelay TURN Fallback (Ports 80 & 443 TCP/UDP)
         {
           urls: 'turn:openrelay.metered.ca:80',
           username: 'openrelayproject',
@@ -62,17 +64,23 @@ class WebRTCManager {
       ]
     };
 
-    // Diagnostic event callbacks for UI Debug Mode
+    // Diagnostic callback for HUD
     this.onDiagnosticsUpdate = null;
 
     this.initSocketSignaling();
   }
 
+  getRoleTag() {
+    return this.isHost ? 'HOST WEBRTC' : 'GUEST WEBRTC';
+  }
+
   // ==================== 1. DIAGNOSTICS LOGGER ====================
-  logPeerState(targetSocketId, tag, extra = {}) {
+  logPeerState(targetSocketId, actionName, extra = {}) {
+    const tag = this.getRoleTag();
     const pc = this.peerConnections.get(targetSocketId);
+
     if (!pc) {
-      console.log(`[WebRTC Diagnostic] [${tag}] Peer: ${targetSocketId} (No active RTCPeerConnection)`, extra);
+      console.log(`[${tag}] [${actionName}] Peer: ${targetSocketId} (No RTCPeerConnection)`, extra);
       return;
     }
 
@@ -85,7 +93,9 @@ class WebRTCManager {
       remoteTracks = 0;
     }
 
-    console.log(`[WebRTC Diagnostic] [${tag}] Peer: ${targetSocketId}`, {
+    console.log(`[${tag}] [${actionName}] Peer state`, {
+      peerId: targetSocketId,
+      role: this.isHost ? 'HOST' : 'GUEST',
       connectionState: pc.connectionState,
       iceConnectionState: pc.iceConnectionState,
       iceGatheringState: pc.iceGatheringState,
@@ -131,18 +141,23 @@ class WebRTCManager {
 
   // ==================== 2. ICE CANDIDATE QUEUE ====================
   async processIceCandidateQueue(targetSocketId, pc) {
+    const tag = this.getRoleTag();
     const queue = this.iceCandidatesQueue.get(targetSocketId);
+
     if (queue && queue.length > 0) {
-      this.logPeerState(targetSocketId, 'Flushing ICE Candidate Queue', { queuedCount: queue.length });
+      console.log(`[${tag}] Flushing ICE candidate queue for ${targetSocketId} (${queue.length} candidate(s))`);
       while (queue.length > 0) {
         const candidate = queue.shift();
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          this.logPeerState(targetSocketId, 'Queued Candidate Applied', {
-            candidateType: candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown')
+          const candidateType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
+          console.log(`[${tag}] Queued ICE candidate applied for ${targetSocketId}`, {
+            candidateType,
+            sdpMid: candidate.sdpMid,
+            sdpMLineIndex: candidate.sdpMLineIndex
           });
         } catch (err) {
-          console.warn(`[WebRTC] Failed to add queued ICE candidate for ${targetSocketId}:`, err);
+          console.warn(`[${tag}] Error adding queued ICE candidate for ${targetSocketId}:`, err);
         }
       }
       this.iceCandidatesQueue.delete(targetSocketId);
@@ -151,178 +166,244 @@ class WebRTCManager {
 
   // ==================== 3. SOCKET.IO SIGNALING LISTENERS ====================
   initSocketSignaling() {
-    // A. Guest receives WebRTC Offer from Host
+    // 5. Host receives guest-requested-stream
+    this.socket.on('guest-requested-stream', ({ guestSocketId }) => {
+      console.log(`[HOST WEBRTC] Event 5: Host received guest-requested-stream from Guest (${guestSocketId})`);
+      if (this.isSharing && this.localStream) {
+        console.log(`[HOST WEBRTC] Active stream available. Initiating peer connection to Guest (${guestSocketId})...`);
+        this.connectToSingleUser(guestSocketId);
+      } else {
+        console.log(`[HOST WEBRTC] Host is not currently screen sharing. Request from Guest (${guestSocketId}) held.`);
+      }
+    });
+
+    // 12. Guest receives webrtc-offer
     this.socket.on('webrtc-offer', async ({ senderSocketId, offer }) => {
-      console.log(`[WebRTC] Received Offer from Host (${senderSocketId})`);
+      console.log(`[GUEST WEBRTC] Event 12: Guest received webrtc-offer from Host (${senderSocketId})`);
+      
+      // 13. Guest creates RTCPeerConnection
+      console.log(`[GUEST WEBRTC] Event 13: Guest creating RTCPeerConnection for Host (${senderSocketId})`);
       const pc = this.createPeerConnection(senderSocketId);
 
       try {
+        // 14. Guest sets remote description
+        console.log(`[GUEST WEBRTC] Event 14: Guest setting remote description (offer)`);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        this.logPeerState(senderSocketId, 'Remote Offer Applied (setRemoteDescription success)');
+        this.logPeerState(senderSocketId, 'Guest Remote Description Set');
 
-        // Flush any ICE candidates that arrived before the offer was set
+        // 24. Flush any queued ICE candidates
         await this.processIceCandidateQueue(senderSocketId, pc);
 
+        // 15. Guest creates answer
+        console.log(`[GUEST WEBRTC] Event 15: Guest creating answer`);
         const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        this.logPeerState(senderSocketId, 'Local Answer Created & Set (setLocalDescription)');
 
+        // 16. Guest sets local description
+        console.log(`[GUEST WEBRTC] Event 16: Guest setting local description (answer)`);
+        await pc.setLocalDescription(answer);
+        this.logPeerState(senderSocketId, 'Guest Local Description Set');
+
+        // 17. Guest sends webrtc-answer
+        console.log(`[GUEST WEBRTC] Event 17: Guest sending webrtc-answer to Host (${senderSocketId})`);
         this.socket.emit('webrtc-answer', {
           targetSocketId: senderSocketId,
           answer: pc.localDescription
         });
-        console.log(`[WebRTC] Answer sent back to Host (${senderSocketId})`);
       } catch (err) {
-        console.error(`[WebRTC Offer Error] Failed handling offer from ${senderSocketId}:`, err);
-        this.logPeerState(senderSocketId, 'Offer Error', { error: err.message });
+        console.error(`[GUEST WEBRTC] Offer Handling Error from ${senderSocketId}:`, err);
+        this.logPeerState(senderSocketId, 'Offer Handling Failed', { error: err.message });
       }
     });
 
-    // B. Host receives WebRTC Answer from Guest
+    // 18. Host receives webrtc-answer
     this.socket.on('webrtc-answer', async ({ senderSocketId, answer }) => {
-      console.log(`[WebRTC] Received Answer from Guest (${senderSocketId})`);
+      console.log(`[HOST WEBRTC] Event 18: Host received webrtc-answer from Guest (${senderSocketId})`);
       const pc = this.peerConnections.get(senderSocketId);
+
       if (pc) {
         try {
+          // 19. Host sets remote description
+          console.log(`[HOST WEBRTC] Event 19: Host setting remote description (answer) from Guest (${senderSocketId})`);
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          this.logPeerState(senderSocketId, 'Remote Answer Applied (setRemoteDescription success)');
+          this.logPeerState(senderSocketId, 'Host Remote Description Set (Answer Applied)');
 
-          // Flush any ICE candidates queued on Host side
+          // 24. Flush any queued ICE candidates on host
           await this.processIceCandidateQueue(senderSocketId, pc);
         } catch (err) {
-          console.error(`[WebRTC Answer Error] Failed setting remote answer from ${senderSocketId}:`, err);
-          this.logPeerState(senderSocketId, 'Answer Error', { error: err.message });
+          console.error(`[HOST WEBRTC] Answer Handling Error from ${senderSocketId}:`, err);
+          this.logPeerState(senderSocketId, 'Answer Handling Failed', { error: err.message });
         }
       } else {
-        console.warn(`[WebRTC] Received answer from ${senderSocketId} but no peer connection exists.`);
+        console.warn(`[HOST WEBRTC] Received answer from ${senderSocketId} but no RTCPeerConnection found.`);
       }
     });
 
-    // C. Host receives stream request from newly joined Guest
-    this.socket.on('guest-requested-stream', ({ guestSocketId }) => {
-      console.log(`[WebRTC] Guest ${guestSocketId} explicitly requested active host stream.`);
-      if (this.isSharing && this.localStream) {
-        this.connectToSingleUser(guestSocketId);
-      } else {
-        console.log(`[WebRTC] Host is not currently sharing a screen. Request from ${guestSocketId} deferred.`);
-      }
-    });
-
-    // D. Receive ICE Candidate
+    // 22. ICE candidate received (Host or Guest)
     this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
+      const tag = this.getRoleTag();
       const pc = this.peerConnections.get(senderSocketId);
       if (!candidate) return;
 
       const candidateType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
+      console.log(`[${tag}] Event 22: ICE candidate received from ${senderSocketId}`, {
+        candidateType,
+        sdpMid: candidate.sdpMid,
+        sdpMLineIndex: candidate.sdpMLineIndex
+      });
 
       if (pc && pc.remoteDescription && pc.remoteDescription.type) {
         try {
+          // 24. ICE candidate applied
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          this.logPeerState(senderSocketId, 'Direct ICE Candidate Applied', { candidateType });
+          console.log(`[${tag}] Event 24: ICE candidate applied directly for ${senderSocketId}`, { candidateType });
         } catch (err) {
-          console.warn(`[WebRTC] Failed to add direct ICE candidate for ${senderSocketId}:`, err);
+          console.warn(`[${tag}] Failed adding direct ICE candidate from ${senderSocketId}:`, err);
         }
       } else {
-        // Buffer candidate until setRemoteDescription completes
+        // 23. ICE candidate queued
         if (!this.iceCandidatesQueue.has(senderSocketId)) {
           this.iceCandidatesQueue.set(senderSocketId, []);
         }
         this.iceCandidatesQueue.get(senderSocketId).push(candidate);
-        this.logPeerState(senderSocketId, 'ICE Candidate Queued', {
-          candidateType,
+        console.log(`[${tag}] Event 23: ICE candidate queued for ${senderSocketId} (remote description pending)`, {
           queueLength: this.iceCandidatesQueue.get(senderSocketId).length
         });
       }
     });
   }
 
-  // ==================== 4. CREATE / MANAGE PEER CONNECTION ====================
+  // ==================== 4. CREATE PEER CONNECTION ====================
   createPeerConnection(targetSocketId) {
-    // Close existing connection if already present to prevent duplicate handlers
+    const tag = this.getRoleTag();
+
+    // Close any previous peer connection for this target socket
     if (this.peerConnections.has(targetSocketId)) {
-      console.log(`[WebRTC] Closing old RTCPeerConnection for ${targetSocketId} before re-creating.`);
+      console.log(`[${tag}] Closing previous RTCPeerConnection for ${targetSocketId}`);
       this.closeSinglePeerConnection(targetSocketId);
     }
 
+    // 6 / 13. Create RTCPeerConnection
+    console.log(`[${tag}] Creating new RTCPeerConnection for target: ${targetSocketId}`);
     const pc = new RTCPeerConnection(this.iceConfig);
     this.peerConnections.set(targetSocketId, pc);
-    this.logPeerState(targetSocketId, 'PeerConnection Created');
 
-    // Transmit local ICE candidate to remote peer
+    this.logPeerState(targetSocketId, 'PeerConnection Initialized');
+
+    // 20 / 21. ICE candidate generated & sent
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         const cType = event.candidate.type || (event.candidate.candidate ? event.candidate.candidate.split(' ')[7] : 'unknown');
-        this.logPeerState(targetSocketId, 'Local ICE Candidate Gathered', { candidateType: cType });
+        console.log(`[${tag}] Event 20/21: ICE candidate generated & sending to ${targetSocketId}`, {
+          candidateType: cType,
+          protocol: event.candidate.protocol,
+          address: event.candidate.address,
+          port: event.candidate.port
+        });
 
         this.socket.emit('webrtc-ice-candidate', {
           targetSocketId: targetSocketId,
           candidate: event.candidate
         });
       } else {
-        this.logPeerState(targetSocketId, 'All Local ICE Candidates Gathered (Null Candidate)');
+        console.log(`[${tag}] Event 25: All local ICE candidates gathered (null candidate). Gathering complete.`);
       }
     };
 
-    // Receive remote tracks (Guest side)
+    // 29. ontrack fires (Guest side)
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote Track Received from ${targetSocketId}: kind = ${event.track.kind}`);
-      this.logPeerState(targetSocketId, 'Remote Track Event', {
+      console.log(`[GUEST WEBRTC] Event 29: ontrack fired!`, event.track.kind);
+      console.log(`[GUEST WEBRTC] Track details:`, {
         kind: event.track.kind,
-        streamsCount: event.streams ? event.streams.length : 0
+        enabled: event.track.enabled,
+        readyState: event.track.readyState,
+        muted: event.track.muted,
+        id: event.track.id
       });
 
-      if (event.streams && event.streams[0]) {
-        this.attachStreamToVideo(event.streams[0], false);
+      // 30 / 31 / 32. Remote MediaStream & Tracks
+      let remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : null;
+
+      if (!remoteStream) {
+        if (!this.remoteMediaStream) {
+          this.remoteMediaStream = new MediaStream();
+        }
+        this.remoteMediaStream.addTrack(event.track);
+        remoteStream = this.remoteMediaStream;
+      } else {
+        this.remoteMediaStream = remoteStream;
       }
+
+      console.log('[GUEST WEBRTC] Event 30: Remote stream ready', remoteStream);
+      console.log('[GUEST WEBRTC] Event 31/32: Remote stream track count:', {
+        videoTracks: remoteStream.getVideoTracks().length,
+        audioTracks: remoteStream.getAudioTracks().length
+      });
+
+      // 33. Remote stream attached to video element
+      this.attachRemoteStreamToGuest(remoteStream);
     };
 
-    // Monitor ICE Connection State
-    pc.oniceconnectionstatechange = () => {
-      const iceState = pc.iceConnectionState;
-      this.logPeerState(targetSocketId, `ICE State Change: ${iceState}`);
+    // 25. iceGatheringState
+    pc.onicegatheringstatechange = () => {
+      console.log(`[${tag}] Event 25: iceGatheringState changed -> ${pc.iceGatheringState} for ${targetSocketId}`);
+      this.logPeerState(targetSocketId, `iceGatheringState: ${pc.iceGatheringState}`);
+    };
 
-      if (iceState === 'failed') {
-        console.warn(`[WebRTC] ICE Connection failed for ${targetSocketId}. Attempting restartIce()...`);
+    // 26. iceConnectionState
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      console.log(`[${tag}] Event 26: iceConnectionState changed -> ${state} for ${targetSocketId}`);
+      this.logPeerState(targetSocketId, `iceConnectionState: ${state}`);
+
+      if (state === 'failed') {
+        console.warn(`[${tag}] ICE Connection failed for ${targetSocketId}. Triggering restartIce()...`);
         if (typeof pc.restartIce === 'function') {
           pc.restartIce();
         }
-      } else if (iceState === 'disconnected') {
-        console.warn(`[WebRTC] ICE Connection disconnected for ${targetSocketId}. Waiting for network recovery...`);
-      } else if (iceState === 'connected' || iceState === 'completed') {
-        console.log(`[WebRTC] ✅ Media stream connected successfully with ${targetSocketId}`);
+      } else if (state === 'connected' || state === 'completed') {
+        console.log(`[${tag}] ✅ WebRTC P2P ICE connected successfully with ${targetSocketId}!`);
       }
     };
 
-    // Monitor overall Connection State
+    // 27. connectionState
     pc.onconnectionstatechange = () => {
       const connState = pc.connectionState;
-      this.logPeerState(targetSocketId, `Connection State Change: ${connState}`);
+      console.log(`[${tag}] Event 27: connectionState changed -> ${connState} for ${targetSocketId}`);
+      this.logPeerState(targetSocketId, `connectionState: ${connState}`);
 
       if (connState === 'failed') {
-        console.error(`[WebRTC] RTCPeerConnection failed with ${targetSocketId}.`);
-        if (this.peerConnections.size === 1 && !this.isSharing) {
-          this.clearVideo();
-        }
-      } else if (connState === 'closed') {
-        this.logPeerState(targetSocketId, 'Connection Closed');
+        console.error(`[${tag}] RTCPeerConnection failed with ${targetSocketId}`);
       }
     };
 
-    // Monitor ICE Gathering State
-    pc.onicegatheringstatechange = () => {
-      this.logPeerState(targetSocketId, `ICE Gathering State: ${pc.iceGatheringState}`);
-    };
-
-    // Monitor Signaling State
+    // 28. signalingState
     pc.onsignalingstatechange = () => {
-      this.logPeerState(targetSocketId, `Signaling State: ${pc.signalingState}`);
+      console.log(`[${tag}] Event 28: signalingState changed -> ${pc.signalingState} for ${targetSocketId}`);
+      this.logPeerState(targetSocketId, `signalingState: ${pc.signalingState}`);
     };
 
-    // If Host has an active screen stream, attach all tracks to this new connection
-    if (this.localStream) {
-      const tracks = this.localStream.getTracks();
-      console.log(`[WebRTC] Attaching ${tracks.length} local track(s) to peer ${targetSocketId}`);
-      tracks.forEach((track) => {
+    // If Host has active screen stream, attach all tracks to new peer connection
+    if (this.isHost && this.localStream) {
+      const videoTracks = this.localStream.getVideoTracks();
+      const audioTracks = this.localStream.getAudioTracks();
+
+      // 7. Host adds video track
+      videoTracks.forEach((track) => {
+        console.log(`[HOST WEBRTC] Event 7: Host adding video track to peer ${targetSocketId}`, {
+          id: track.id,
+          enabled: track.enabled,
+          readyState: track.readyState
+        });
+        pc.addTrack(track, this.localStream);
+      });
+
+      // 8. Host adds audio track
+      audioTracks.forEach((track) => {
+        console.log(`[HOST WEBRTC] Event 8: Host adding audio track to peer ${targetSocketId}`, {
+          id: track.id,
+          enabled: track.enabled,
+          readyState: track.readyState
+        });
         pc.addTrack(track, this.localStream);
       });
     }
@@ -339,6 +420,7 @@ class WebRTCManager {
         pc.oniceconnectionstatechange = null;
         pc.onconnectionstatechange = null;
         pc.onsignalingstatechange = null;
+        pc.onicegatheringstatechange = null;
         pc.close();
       } catch (e) {
         console.warn(`[WebRTC] Error closing peer connection for ${targetSocketId}:`, e);
@@ -367,32 +449,31 @@ class WebRTCManager {
       sampleRate: 44100
     };
 
-    // Attempt 1: Capture with audio enabled
     try {
-      console.log('[WebRTC] Requesting getDisplayMedia with video + audio...');
+      console.log('[HOST WEBRTC] Requesting getDisplayMedia with video + audio...');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: videoConstraints,
         audio: audioConstraints
       });
       return stream;
     } catch (audioErr) {
-      console.warn('[WebRTC] Combined video+audio capture rejected or unsupported:', audioErr.message);
-      // Attempt 2: Fallback to video only
+      console.warn('[HOST WEBRTC] Audio capture constraint failed. Retrying video only:', audioErr.message);
       try {
-        console.log('[WebRTC] Retrying getDisplayMedia with video only...');
         const videoOnlyStream = await navigator.mediaDevices.getDisplayMedia({
           video: videoConstraints,
           audio: false
         });
         return videoOnlyStream;
       } catch (videoErr) {
-        throw videoErr; // User cancelled or permission denied
+        throw videoErr;
       }
     }
   }
 
-  // ==================== 6. START / STOP SCREEN SHARE ====================
+  // ==================== 6. START / STOP SCREEN SHARE (HOST) ====================
   async startScreenShare(userList = []) {
+    this.isHost = true;
+
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
         if (typeof showToast === 'function') {
@@ -408,39 +489,47 @@ class WebRTCManager {
       const videoTracks = stream.getVideoTracks();
       const audioTracks = stream.getAudioTracks();
 
-      console.log(`[WebRTC] Screen capture active: ${videoTracks.length} video track(s), ${audioTracks.length} audio track(s)`);
+      // VERIFY STREAM TRACKS
+      console.log('[HOST WEBRTC] Captured stream', {
+        videoTracks: videoTracks.length,
+        audioTracks: audioTracks.length
+      });
 
-      if (videoTracks.length > 0) {
-        console.log('[WebRTC] Video Track Settings:', videoTracks[0].getSettings());
-      }
+      stream.getTracks().forEach((track, idx) => {
+        console.log(`[HOST WEBRTC] Captured track #${idx + 1}`, {
+          kind: track.kind,
+          enabled: track.enabled,
+          readyState: track.readyState,
+          muted: track.muted,
+          settings: track.getSettings ? track.getSettings() : {}
+        });
+      });
 
       if (audioTracks.length > 0) {
-        console.log('[WebRTC] Audio Track Settings:', audioTracks[0].getSettings());
         if (typeof showToast === 'function') {
           showToast('🔊 Screen & Tab Audio Sharing Started Live!');
         }
       } else {
-        // Step 8: Clear feedback if browser/capture surface did not provide audio
         if (typeof showToast === 'function') {
-          showToast('🖥️ Video captured successfully, but this browser/tab did not provide audio.');
+          showToast('🖥️ Video captured. Note: Tab audio was not selected in browser picker.');
         }
       }
 
-      // Attach locally for Host preview (Muted to eliminate feedback echo)
-      this.attachStreamToVideo(stream, true);
+      // Host local preview (Muted)
+      this.attachLocalStreamToHost(stream);
 
-      // Handle browser's native floating "Stop Sharing" bar
+      // Handle browser's native stop share bar
       if (videoTracks.length > 0) {
         videoTracks[0].onended = () => {
-          console.log('[WebRTC] Host stopped sharing via native browser bar.');
+          console.log('[HOST WEBRTC] Host stopped sharing via browser bar');
           this.stopScreenShare();
         };
       }
 
-      // Broadcast offer to all other participants currently in room
-      console.log(`[WebRTC] Initiating stream offer to ${userList.length} participant(s)...`);
+      // Connect to all active participants in room
+      console.log(`[HOST WEBRTC] Connecting stream to ${userList.length} participant(s)...`);
       for (const user of userList) {
-        if (user.socketId !== this.socket.id) {
+        if (user.socketId && user.socketId !== this.socket.id) {
           await this.connectToSingleUser(user.socketId);
         }
       }
@@ -448,10 +537,10 @@ class WebRTCManager {
       this.socket.emit('screen-share-status', { isSharing: true });
       return true;
     } catch (err) {
-      console.error('[WebRTC] Screen share failed or was cancelled by user:', err);
+      console.error('[HOST WEBRTC] Screen capture failed or permission denied:', err);
       if (typeof showToast === 'function') {
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          showToast('⚠️ Screen share cancelled or permission denied.');
+          showToast('⚠️ Screen share permission denied.');
         } else {
           showToast(`⚠️ Screen share error: ${err.message}`);
         }
@@ -460,36 +549,51 @@ class WebRTCManager {
     }
   }
 
+  // 6 - 11. Host creates connection, attaches tracks, creates offer, sends offer
   async connectToSingleUser(targetSocketId) {
     if (!this.localStream) {
-      console.warn(`[WebRTC] Cannot connect to ${targetSocketId}: localStream is null`);
+      console.warn(`[HOST WEBRTC] Cannot connect to ${targetSocketId}: localStream is null`);
       return;
     }
 
     const tracks = this.localStream.getTracks();
     if (tracks.length === 0) {
-      console.warn(`[WebRTC] Cannot connect to ${targetSocketId}: localStream has 0 tracks`);
+      console.warn(`[HOST WEBRTC] Cannot connect to ${targetSocketId}: localStream has 0 tracks`);
       return;
     }
 
-    console.log(`[WebRTC] Preparing WebRTC Offer for Guest ${targetSocketId} (${tracks.length} tracks)...`);
+    console.log(`[HOST WEBRTC] Initiating WebRTC handshake with Guest (${targetSocketId})`);
+    
+    // 6. Host creates RTCPeerConnection (tracks are attached inside createPeerConnection)
     const pc = this.createPeerConnection(targetSocketId);
 
+    // VERIFY RTCPeerConnection TRACKS
+    console.log('[HOST WEBRTC] Senders before offer', pc.getSenders().map(sender => ({
+      kind: sender.track?.kind,
+      readyState: sender.track?.readyState
+    })));
+
     try {
+      // 9. Host creates offer
+      console.log(`[HOST WEBRTC] Event 9: Host creating offer for Guest (${targetSocketId})`);
       const offer = await pc.createOffer({
         offerToReceiveVideo: false,
         offerToReceiveAudio: false
       });
-      await pc.setLocalDescription(offer);
-      this.logPeerState(targetSocketId, 'Local Offer Created & Set', { sdpType: offer.type });
 
+      // 10. Host sets local description
+      console.log(`[HOST WEBRTC] Event 10: Host setting local description (offer)`);
+      await pc.setLocalDescription(offer);
+      this.logPeerState(targetSocketId, 'Host Local Description Set (Offer Created)');
+
+      // 11. Host sends webrtc-offer
+      console.log(`[HOST WEBRTC] Event 11: Host sending webrtc-offer to Guest (${targetSocketId})`);
       this.socket.emit('webrtc-offer', {
         targetSocketId: targetSocketId,
         offer: pc.localDescription
       });
-      console.log(`[WebRTC] Offer transmitted to Guest ${targetSocketId}`);
     } catch (err) {
-      console.error(`[WebRTC] Failed generating offer for ${targetSocketId}:`, err);
+      console.error(`[HOST WEBRTC] Offer Generation Error for ${targetSocketId}:`, err);
       this.logPeerState(targetSocketId, 'Offer Generation Failed', { error: err.message });
     }
   }
@@ -497,16 +601,13 @@ class WebRTCManager {
   stopScreenShare() {
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
-        try {
-          track.stop();
-        } catch (e) {}
+        try { track.stop(); } catch (e) {}
       });
       this.localStream = null;
     }
 
     this.isSharing = false;
 
-    // Cleanly close all active peer connections
     this.peerConnections.forEach((pc, socketId) => {
       this.closeSinglePeerConnection(socketId);
     });
@@ -515,30 +616,59 @@ class WebRTCManager {
 
     this.clearVideo();
     this.socket.emit('screen-share-status', { isSharing: false });
-    console.log('[WebRTC] Screen sharing stopped and all peer connections dismantled.');
+    console.log('[HOST WEBRTC] Screen sharing stopped and peer connections closed.');
   }
 
-  // ==================== 7. VIDEO ATTACHMENT & AUTOPLAY RECOVERY ====================
-  attachStreamToVideo(stream, isLocalStream = false) {
+  // ==================== 7. VIDEO DISPLAY & AUTOPLAY ====================
+  attachLocalStreamToHost(stream) {
     if (this.videoElement) {
       this.videoElement.srcObject = stream;
       this.videoElement.style.display = 'block';
-
-      // Host local preview must remain muted to avoid infinite loopback echo
-      this.videoElement.muted = Boolean(isLocalStream);
+      this.videoElement.muted = true; // Host muted locally
 
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn('[Autoplay Policy] Unmuted video playback blocked by browser. Retrying muted:', err);
-          this.videoElement.muted = true;
-          this.videoElement.play().then(() => {
-            if (typeof showToast === 'function' && !isLocalStream) {
-              showToast('🔊 Click anywhere on the cinema stage to enable audio!');
-            }
-          }).catch(e => console.error('[WebRTC] Final video playback error:', e));
-        });
+        playPromise.catch(e => console.warn('[HOST WEBRTC] Local video playback notice:', e));
       }
+    }
+
+    if (this.placeholderEl) {
+      this.placeholderEl.style.display = 'none';
+    }
+  }
+
+  // 33. Remote stream attached to video element (Guest side)
+  attachRemoteStreamToGuest(remoteStream) {
+    if (this.videoElement) {
+      console.log('[GUEST WEBRTC] Event 33: Attaching remote stream to video element');
+      this.videoElement.srcObject = remoteStream;
+      this.videoElement.style.display = 'block';
+      this.videoElement.muted = false;
+
+      console.log('[GUEST WEBRTC] Remote stream attached. Calling video.play()...');
+
+      const playPromise = this.videoElement.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log('[GUEST WEBRTC] ✅ Remote video playing successfully with audio!');
+          })
+          .catch((err) => {
+            console.error('[GUEST WEBRTC] Video play failed (Autoplay policy):', err);
+            console.log('[GUEST WEBRTC] Attempting muted fallback playback...');
+            this.videoElement.muted = true;
+            this.videoElement.play()
+              .then(() => {
+                console.log('[GUEST WEBRTC] Remote video playing (muted fallback)');
+                if (typeof showToast === 'function') {
+                  showToast('🔊 Click the theatre stage to unmute live stream audio!');
+                }
+              })
+              .catch(e => console.error('[GUEST WEBRTC] Muted playback also failed:', e));
+          });
+      }
+    } else {
+      console.error('[GUEST WEBRTC] Error: videoElement (#remote-stream-video) not found in DOM!');
     }
 
     if (this.placeholderEl) {

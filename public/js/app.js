@@ -6,7 +6,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
 
-  // Step 3: Dynamic Socket.io connection utilizing current origin (works on localhost, Render, GoDaddy)
+  // Dynamic Socket.io connection utilizing current origin
   const socket = io({
     transports: ['websocket', 'polling'],
     reconnection: true,
@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const audienceListUl = document.getElementById('audience-list');
   const audienceCountEl = document.getElementById('audience-count');
 
-  // ==================== STEP 16: PRODUCTION DEBUG PANEL ====================
+  // ==================== DEBUG MODE PANEL (?debug=1) ====================
   const urlParams = new URLSearchParams(window.location.search);
   const isDebugMode = urlParams.get('debug') === '1' || localStorage.getItem('cineparty_debug') === '1';
 
@@ -120,7 +120,6 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log(`[Socket] Connected! ID: ${socket.id} | Transport: ${transportName}`);
     updateDebugPanel();
 
-    // Step 11: On reconnect, restore room session if stored in sessionStorage
     const savedRoom = sessionStorage.getItem('cp_roomCode');
     const savedName = sessionStorage.getItem('cp_username');
     const savedIsHost = sessionStorage.getItem('cp_isHost') === 'true';
@@ -193,7 +192,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Velvet Curtain Transition Trigger
   function triggerCurtainTransition(titleText, callback) {
     if (curtainRoomName) curtainRoomName.textContent = titleText;
     curtainOverlay.classList.add('closed');
@@ -209,14 +207,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 400);
   }
 
-  // Switch to Room View
   function enterRoomView(roomCode, hostStatus, userObj, roomState) {
     currentRoomCode = roomCode;
     isHost = hostStatus;
     currentUser = userObj;
+    webrtc.isHost = hostStatus;
     player.isHost = hostStatus;
 
-    // Step 11: Store session details in sessionStorage
     sessionStorage.setItem('cp_roomCode', roomCode);
     sessionStorage.setItem('cp_username', userObj.username || '');
     sessionStorage.setItem('cp_isHost', hostStatus ? 'true' : 'false');
@@ -248,7 +245,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDebugPanel();
   }
 
-  // Exit Room
   btnLeaveRoom.addEventListener('click', () => {
     triggerCurtainTransition('Exiting Theatre...', () => {
       sessionStorage.removeItem('cp_roomCode');
@@ -263,27 +259,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Room Created (Host)
   socket.on('room-created', ({ roomCode, isHost: hostFlag, user, roomState }) => {
+    console.log(`[HOST WEBRTC] Room Created: ${roomCode} by ${user.username}`);
     enterRoomView(roomCode, hostFlag, user, roomState);
     updateAudienceList(roomState.users);
   });
 
-  // Room Joined (Guest)
+  // 1. Guest joins room
   socket.on('room-joined', ({ roomCode, isHost: hostFlag, user, roomState }) => {
+    console.log(`[GUEST WEBRTC] Event 1: Guest joined room ${roomCode} (Host: ${hostFlag})`);
     enterRoomView(roomCode, hostFlag, user, roomState);
     updateAudienceList(roomState.users);
 
-    // Initial state sync
     if (roomState.currentUrl && roomState.mode !== 'screenshare') {
       player.loadUrl(roomState.currentUrl, roomState.mode, false);
     }
 
-    // Step 10: Deterministic Stream Request Flow
+    // 2. Guest sends request-host-stream if host is already sharing
     if (roomState.isScreenSharing) {
       document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
       document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
 
       setTimeout(() => {
-        console.log('[Guest] Requesting active WebRTC screen share from Host...');
+        console.log('[GUEST WEBRTC] Event 2: Guest sending request-host-stream to server');
         socket.emit('request-host-stream');
       }, 500);
     } else {
@@ -292,7 +289,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Step 9: Specific error handling (e.g. ROOM_FULL)
   socket.on('join-error', ({ code, message }) => {
     openCurtains();
     if (code === 'ROOM_FULL') {
@@ -312,9 +308,9 @@ document.addEventListener('DOMContentLoaded', () => {
     openCurtains();
   });
 
-  // Promoted to Host Handler
   socket.on('promoted-to-host', () => {
     isHost = true;
+    webrtc.isHost = true;
     player.isHost = true;
     sessionStorage.setItem('cp_isHost', 'true');
 
@@ -331,40 +327,40 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDebugPanel();
   });
 
-  // Host Changed Notice
   socket.on('host-changed', ({ newHostUsername }) => {
     addSystemChatMessage(`🎬 ${newHostUsername} is now the Director Host!`);
   });
 
-  // User Joined Room Notice
   socket.on('user-joined', ({ user, users }) => {
     updateAudienceList(users);
     addSystemChatMessage(`🎟️ ${user.username} entered the theatre!`);
 
-    // If host is actively screen sharing, initiate stream offer to this new guest
+    // If host is actively sharing, immediately connect to the newly joined guest
     if (isHost && webrtc.isSharing && user.socketId) {
-      console.log(`[Host] New guest ${user.socketId} joined — connecting WebRTC stream...`);
+      console.log(`[HOST WEBRTC] New guest ${user.socketId} entered during active share. Initiating WebRTC offer...`);
       webrtc.connectToSingleUser(user.socketId);
     }
     updateDebugPanel();
   });
 
-  // User Left Room Notice
   socket.on('user-left', ({ socketId, username, users }) => {
     updateAudienceList(users);
     addSystemChatMessage(`👋 ${username} left the theatre.`);
-
-    // Clean up peer connection for departed user
     webrtc.closeSinglePeerConnection(socketId);
     updateDebugPanel();
   });
 
-  // Screen Share Status Update
   socket.on('screen-share-status', ({ isSharing }) => {
+    console.log(`[${isHost ? 'HOST WEBRTC' : 'GUEST WEBRTC'}] screen-share-status received: isSharing = ${isSharing}`);
+
     if (!isHost) {
       if (isSharing) {
         document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
         document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
+
+        // 2. Guest requests stream from host
+        console.log('[GUEST WEBRTC] Event 2: Host started screen share. Guest sending request-host-stream...');
+        socket.emit('request-host-stream');
       } else {
         document.getElementById('placeholder-title').textContent = 'Host Screen Share Stage';
         document.getElementById('placeholder-desc').textContent = 'Host has not started sharing yet.';
@@ -374,7 +370,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDebugPanel();
   });
 
-  // Sync Navigation (URL & Mode)
   socket.on('sync-navigation', ({ url, mode }) => {
     if (!isHost) {
       player.loadUrl(url, mode, false);
@@ -382,25 +377,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Sync Playback (Play/Pause/Seek)
   socket.on('sync-playback', ({ action, time }) => {
     if (!isHost) {
       player.handleSyncPlayback(action, time);
     }
   });
 
-  // Dim Lights Sync
   socket.on('lights-toggled', ({ dimmed }) => {
     document.body.classList.toggle('lights-dimmed', dimmed);
     lightsBtnText.textContent = dimmed ? 'Brighten' : 'Dim Lights';
   });
 
-  // Receive Reaction Emoji
   socket.on('receive-reaction', ({ emoji, xPos }) => {
     spawnFloatingEmoji(emoji, xPos);
   });
 
-  // Receive Chat Message
   socket.on('receive-chat', (msgData) => {
     renderChatMessage(msgData);
   });
@@ -429,13 +420,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnStartShareCta) btnStartShareCta.addEventListener('click', handleScreenShareToggle);
   if (btnDeckShare) btnDeckShare.addEventListener('click', handleScreenShareToggle);
 
-  // Toggle Lights Button
   btnToggleLights.addEventListener('click', () => {
     const isDimmed = document.body.classList.contains('lights-dimmed');
     socket.emit('toggle-lights', { dimmed: !isDimmed });
   });
 
-  // Copy Ticket Code
   function copyTicketCode() {
     if (!currentRoomCode) return;
     navigator.clipboard.writeText(currentRoomCode).then(() => {
@@ -451,7 +440,6 @@ document.addEventListener('DOMContentLoaded', () => {
     copyTicketCode();
   });
 
-  // ==================== FLOATING EMOJI REACTION SYSTEM ====================
   document.querySelectorAll('.btn-emoji-react').forEach((btn) => {
     btn.addEventListener('click', () => {
       const emoji = btn.getAttribute('data-emoji');
@@ -474,7 +462,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 3000);
   }
 
-  // ==================== CHAT & AUDIENCE LIST ====================
   chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
@@ -547,7 +534,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Sidebar Tab Switcher
   document.querySelectorAll('.sidebar-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       const targetSide = tab.getAttribute('data-side');
@@ -561,7 +547,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // ==================== TOAST NOTIFICATION UTILITY ====================
   function showToast(message) {
     let container = document.getElementById('toast-container');
     if (!container) return;

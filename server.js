@@ -235,46 +235,55 @@ io.on('connection', (socket) => {
   });
 
   // ==================== 4. WEBRTC SIGNALING RELAY ====================
-  // Host -> Guest Offer
+  // 3 & 4. Server receives request-host-stream and forwards guest-requested-stream to Host
+  socket.on('request-host-stream', () => {
+    const code = socket.roomCode;
+    console.log(`[SERVER WEBRTC] Event 3: Server received request-host-stream from Guest (${socket.id}) for Room (${code || 'none'})`);
+
+    if (!code) {
+      console.warn(`[SERVER WEBRTC] Cannot route request-host-stream: Socket ${socket.id} has no roomCode.`);
+      return;
+    }
+    const room = rooms.get(code);
+    if (!room || !room.hostSocketId) {
+      console.warn(`[SERVER WEBRTC] Cannot route request-host-stream: Room ${code} or hostSocketId not found.`);
+      return;
+    }
+
+    console.log(`[SERVER WEBRTC] Event 4: Server sending guest-requested-stream to Host (${room.hostSocketId}) from Guest (${socket.id})`);
+    io.to(room.hostSocketId).emit('guest-requested-stream', {
+      guestSocketId: socket.id
+    });
+  });
+
+  // 11. Host -> Guest Offer
   socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
     if (!targetSocketId || !offer) return;
+    console.log(`[SERVER WEBRTC] Event 11: Relaying webrtc-offer from Host (${socket.id}) to Guest (${targetSocketId})`);
     io.to(targetSocketId).emit('webrtc-offer', {
       senderSocketId: socket.id,
       offer
     });
   });
 
-  // Guest -> Host Answer
+  // 17. Guest -> Host Answer
   socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
     if (!targetSocketId || !answer) return;
+    console.log(`[SERVER WEBRTC] Event 17: Relaying webrtc-answer from Guest (${socket.id}) to Host (${targetSocketId})`);
     io.to(targetSocketId).emit('webrtc-answer', {
       senderSocketId: socket.id,
       answer
     });
   });
 
-  // Bidirectional ICE Candidate exchange
+  // 21. Bidirectional ICE Candidate exchange
   socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
     if (!targetSocketId || !candidate) return;
+    const cType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
+    console.log(`[SERVER WEBRTC] Event 21: Relaying ICE candidate (${cType}) from (${socket.id}) to (${targetSocketId})`);
     io.to(targetSocketId).emit('webrtc-ice-candidate', {
       senderSocketId: socket.id,
       candidate
-    });
-  });
-
-  // Guest explicitly requests host's active WebRTC stream
-  socket.on('request-host-stream', () => {
-    const code = socket.roomCode;
-    if (!code) {
-      console.warn(`[request-host-stream] Socket ${socket.id} has no roomCode yet`);
-      return;
-    }
-    const room = rooms.get(code);
-    if (!room || !room.hostSocketId) return;
-
-    console.log(`[Stream Request] Guest ${socket.id} requesting stream from Host ${room.hostSocketId} in ${code}`);
-    io.to(room.hostSocketId).emit('guest-requested-stream', {
-      guestSocketId: socket.id
     });
   });
 
