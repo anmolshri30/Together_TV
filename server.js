@@ -361,6 +361,18 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Guest requests immediate sync refresh from Host (Sync Now button)
+  socket.on('request-host-sync', () => {
+    const code = socket.roomCode;
+    if (!code) return;
+    const room = rooms.get(code);
+    if (!room || !room.hostSocketId) return;
+
+    io.to(room.hostSocketId).emit('guest-requested-sync', {
+      guestSocketId: socket.id
+    });
+  });
+
   // ==================== 6. THEATRE INTERACTIONS ====================
   // Dim Stage Lights Toggle
   socket.on('toggle-lights', ({ dimmed }) => {

@@ -159,9 +159,42 @@ class PlayerManager {
       }, 400);
     });
 
+    // Sync Button Click (Guest Side)
+    const btnSync = document.getElementById('btn-video-sync');
+    if (btnSync) {
+      btnSync.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.forceSync();
+      });
+    }
+
+    // Host receives request to broadcast fresh authoritative sync snapshot
+    this.socket.on('guest-requested-sync', () => {
+      if (this.isHost && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function' && this.currentMode === 'youtube') {
+        const time = this.ytPlayer.getCurrentTime();
+        const isPlaying = (this.ytPlayer.getPlayerState() === this.getYTStates().PLAYING);
+        this.socket.emit('sync-heartbeat', {
+          time,
+          isPlaying,
+          mode: this.currentMode,
+          videoId: this.currentVideoId,
+          timestamp: Date.now()
+        });
+      }
+    });
+
     // Initialize YouTube IFrame API & Heartbeat
     this.initYouTubeAPI();
     this.startHostHeartbeatLoop();
+  }
+
+  // Force authoritative sync refresh (Guest Side)
+  forceSync() {
+    console.log('[Player] Guest requested immediate authoritative sync from Host');
+    this.socket.emit('request-host-sync');
+    if (typeof showToast === 'function') {
+      showToast('🔄 Synchronizing stage with host...');
+    }
   }
 
   // Continuous Heartbeat Loop (Host Side - every 1.5s)

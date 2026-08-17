@@ -238,6 +238,65 @@
             <div id="viewport-screenshare" class="stage-view-panel active">
               <video id="remote-stream-video" autoplay playsinline class="stage-video"></video>
               
+              <!-- Video Touch & Responsive Controls Overlay (Guest & Mobile friendly) -->
+              <div id="video-touch-overlay" class="video-touch-overlay">
+                <!-- Top Status Bar: Connection Quality & Sync Action -->
+                <div class="video-overlay-top">
+                  <div class="quality-indicator-container">
+                    <button id="btn-quality-badge" class="badge-quality quality-excellent" title="Connection Quality (Click for details)" type="button">
+                      <span class="quality-dot"></span>
+                      <span id="quality-label-text">1080p HD</span>
+                    </button>
+                    <!-- Quality Stats Popup Tooltip -->
+                    <div id="quality-stats-popup" class="quality-stats-popup hidden">
+                      <div class="stats-popup-title">📊 Connection Diagnostics</div>
+                      <div class="stat-row"><span>Status:</span> <strong id="stat-status">Connected</strong></div>
+                      <div class="stat-row"><span>Resolution:</span> <strong id="stat-resolution">1080p</strong></div>
+                      <div class="stat-row"><span>Framerate:</span> <strong id="stat-fps">30 FPS</strong></div>
+                      <div class="stat-row"><span>Latency (RTT):</span> <strong id="stat-rtt">45 ms</strong></div>
+                      <div class="stat-row"><span>Packet Loss:</span> <strong id="stat-loss">0%</strong></div>
+                    </div>
+                  </div>
+
+                  <div class="overlay-top-actions">
+                    <button id="btn-video-sync" class="btn-touch-ctrl btn-touch-sync" title="Sync Video Position with Host" type="button">
+                      <span class="icon">🔄</span> <span class="btn-label">Sync</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Center Touch Action Trigger (Autoplay Unmute overlay) -->
+                <div id="video-center-cta" class="video-center-cta hidden">
+                  <div class="center-cta-bubble">
+                    <span class="center-cta-icon">🔊</span>
+                    <span class="center-cta-text">Tap anywhere to play with sound</span>
+                  </div>
+                </div>
+
+                <!-- Reconnecting / Buffering Spinner -->
+                <div id="video-buffering-indicator" class="video-buffering-indicator hidden">
+                  <div class="buffering-spinner"></div>
+                  <span class="buffering-text">Reconnecting stream...</span>
+                </div>
+
+                <!-- Bottom Controls Bar -->
+                <div class="video-overlay-bottom">
+                  <div class="overlay-left-controls">
+                    <button id="btn-video-audio-toggle" class="btn-touch-ctrl" title="Mute/Unmute Audio" type="button">
+                      <span id="video-audio-icon">🔊</span>
+                    </button>
+                  </div>
+                  <div class="overlay-right-controls">
+                    <button id="btn-video-pip" class="btn-touch-ctrl" title="Picture in Picture" type="button">
+                      <span>📺</span>
+                    </button>
+                    <button id="btn-video-fullscreen" class="btn-touch-ctrl" title="Toggle Fullscreen" type="button">
+                      <span id="video-fullscreen-icon">⛶</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <!-- Screen Share Placeholder / Prompt Overlay -->
               <div id="screenshare-placeholder" class="stage-placeholder">
                 <div class="placeholder-card">
@@ -308,8 +367,16 @@
 
         </div>
 
+        <!-- Mobile Floating Drawer Toggle Buttons -->
+        <div class="mobile-sidebar-toggle-bar">
+          <button id="btn-toggle-mobile-chat" class="btn-mobile-drawer" title="Toggle Chat & Reactions">
+            <span>💬 Chat & Reactions</span>
+            <span id="mobile-chat-badge" class="mobile-unread-dot hidden"></span>
+          </button>
+        </div>
+
         <!-- Right: Interactive Audience Lounge & Chat Sidebar -->
-        <aside class="theatre-sidebar">
+        <aside class="theatre-sidebar" id="theatre-sidebar">
           
           <!-- Sidebar Tabs: Chat vs Audience -->
           <div class="sidebar-tabs">

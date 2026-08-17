@@ -541,6 +541,22 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Mobile Drawer Toggle Button
+  const btnMobileChat = document.getElementById('btn-toggle-mobile-chat');
+  const theatreSidebar = document.getElementById('theatre-sidebar');
+  const mobileChatBadge = document.getElementById('mobile-chat-badge');
+
+  if (btnMobileChat && theatreSidebar) {
+    btnMobileChat.addEventListener('click', () => {
+      theatreSidebar.classList.toggle('mobile-open');
+      const isOpen = theatreSidebar.classList.contains('mobile-open');
+      btnMobileChat.classList.toggle('active', isOpen);
+      if (isOpen && mobileChatBadge) {
+        mobileChatBadge.classList.add('hidden');
+      }
+    });
+  }
+
   function showToast(message) {
     let container = document.getElementById('toast-container');
     if (!container) return;

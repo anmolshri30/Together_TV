@@ -1,7 +1,12 @@
 /* ==========================================================================
    WEBRTC SCREEN & AUDIO SHARING MODULE (DIRECT SOCKET.IO SIGNALING)
    Native WebRTC RTCPeerConnection for Host -> Maximum 3 Guests Architecture
-   Unique Negotiation IDs, Per-Peer Negotiation Lock & Defensive State Guards
+   - Adaptive Screen Capture (1080p @ 30 FPS default)
+   - Per-Guest Adaptive Outgoing Bitrate & Sender Parameters (HIGH / MEDIUM / LOW)
+   - Real-Time RTC Stats Monitoring with Conservative Quality Transitions
+   - Mobile-First Video Player, Fullscreen API, Orientation Lock, PiP & Touch Overlay
+   - Network / ICE / Remote Track Recovery & Connection Quality Indicator
+   - Safe Area Compliance & Autoplay Recovery
    ========================================================================== */
 
 class WebRTCManager {
@@ -10,14 +15,39 @@ class WebRTCManager {
     this.localStream = null;
     this.remoteMediaStream = null; // Accumulated remote stream on guest
     this.peerConnections = new Map(); // targetSocketId -> RTCPeerConnection
-    this.peerStates = new Map(); // targetSocketId -> { pc, negotiationInProgress: boolean, currentNegotiationId: string | null }
+    this.peerStates = new Map(); // targetSocketId -> { pc, negotiationInProgress, currentNegotiationId, currentQuality, statsTimer, lastStats, consecutivePoorSamples, consecutiveHealthySamples, targetBitrate }
     this.iceCandidatesQueue = new Map(); // targetSocketId -> Array of RTCIceCandidate
     this.isSharing = false;
     this.isHost = false;
     this.signalingInitialized = false;
 
+    // Quality profiles for adaptive outgoing stream
+    this.QUALITY_PROFILES = {
+      HIGH: { label: '1080p HD', maxBitrate: 4000000, maxFramerate: 30, scaleDown: 1.0 },
+      MEDIUM: { label: '720p', maxBitrate: 2500000, maxFramerate: 30, scaleDown: 1.5 },
+      LOW: { label: '480p SD', maxBitrate: 1000000, maxFramerate: 24, scaleDown: 2.0 }
+    };
+
+    // DOM Elements
     this.videoElement = document.getElementById('remote-stream-video');
     this.placeholderEl = document.getElementById('screenshare-placeholder');
+    this.touchOverlay = document.getElementById('video-touch-overlay');
+    this.qualityBadge = document.getElementById('btn-quality-badge');
+    this.qualityLabel = document.getElementById('quality-label-text');
+    this.qualityStatsPopup = document.getElementById('quality-stats-popup');
+    this.btnPip = document.getElementById('btn-video-pip');
+    this.btnFullscreen = document.getElementById('btn-video-fullscreen');
+    this.iconFullscreen = document.getElementById('video-fullscreen-icon');
+    this.btnAudioToggle = document.getElementById('btn-video-audio-toggle');
+    this.iconAudio = document.getElementById('video-audio-icon');
+    this.centerCta = document.getElementById('video-center-cta');
+    this.bufferingIndicator = document.getElementById('video-buffering-indicator');
+    this.btnSync = document.getElementById('btn-video-sync');
+
+    // Controls overlay auto-hide timer
+    this.controlsHideTimeout = null;
+    this.guestStatsTimer = null;
+    this.lastGuestStats = null;
 
     // Production ICE Server Topology (STUN + Multi-Port TURN Fallbacks)
     this.iceConfig = {
@@ -70,19 +100,27 @@ class WebRTCManager {
     this.onDiagnosticsUpdate = null;
 
     this.initSocketSignaling();
+    this.initTouchAndUIControls();
+    this.initNetworkListeners();
   }
 
   getRoleTag() {
     return this.isHost ? 'HOST WEBRTC' : 'GUEST WEBRTC';
   }
 
-  // ==================== 1. PER-PEER NEGOTIATION STATE ====================
+  // ==================== 1. PER-PEER NEGOTIATION & QUALITY STATE ====================
   getOrCreatePeerState(targetSocketId) {
     if (!this.peerStates.has(targetSocketId)) {
       this.peerStates.set(targetSocketId, {
         pc: null,
         negotiationInProgress: false,
-        currentNegotiationId: null
+        currentNegotiationId: null,
+        currentQuality: 'HIGH',
+        statsTimer: null,
+        lastStats: null,
+        consecutivePoorSamples: 0,
+        consecutiveHealthySamples: 0,
+        targetBitrate: 4000000
       });
     }
     return this.peerStates.get(targetSocketId);
@@ -95,7 +133,231 @@ class WebRTCManager {
     return 'neg-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9);
   }
 
-  // ==================== 2. DIAGNOSTICS LOGGER ====================
+  // ==================== 2. ADAPTIVE WEBRTC SENDER QUALITY ====================
+  async applySenderQuality(targetSocketId, qualityLevel) {
+    const pc = this.peerConnections.get(targetSocketId);
+    const peerState = this.peerStates.get(targetSocketId);
+    if (!pc || !peerState) return;
+
+    if (peerState.currentQuality === qualityLevel) return;
+
+    const senders = pc.getSenders ? pc.getSenders() : [];
+    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+    if (!videoSender || typeof videoSender.getParameters !== 'function') return;
+
+    const profile = this.QUALITY_PROFILES[qualityLevel] || this.QUALITY_PROFILES.HIGH;
+
+    try {
+      const params = videoSender.getParameters();
+      if (!params || !params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+
+      params.encodings[0].maxBitrate = profile.maxBitrate;
+      params.encodings[0].maxFramerate = profile.maxFramerate;
+      if (typeof params.encodings[0].scaleResolutionDownBy !== 'undefined' || qualityLevel !== 'HIGH') {
+        params.encodings[0].scaleResolutionDownBy = profile.scaleDown;
+      }
+
+      await videoSender.setParameters(params);
+      const oldQuality = peerState.currentQuality;
+      peerState.currentQuality = qualityLevel;
+      peerState.targetBitrate = profile.maxBitrate;
+
+      console.log(`[WEBRTC QUALITY] Guest ${targetSocketId}: ${oldQuality} → ${qualityLevel} (Target: ${(profile.maxBitrate / 1000000).toFixed(1)} Mbps @ ${profile.maxFramerate} FPS)`);
+    } catch (e) {
+      console.warn(`[WEBRTC QUALITY] Notice updating sender parameters for ${targetSocketId}:`, e.message);
+    }
+  }
+
+  startHostStatsMonitoring(targetSocketId) {
+    const peerState = this.getOrCreatePeerState(targetSocketId);
+    if (peerState.statsTimer) {
+      clearInterval(peerState.statsTimer);
+    }
+
+    peerState.statsTimer = setInterval(async () => {
+      const pc = this.peerConnections.get(targetSocketId);
+      if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        clearInterval(peerState.statsTimer);
+        peerState.statsTimer = null;
+        return;
+      }
+
+      try {
+        const stats = await pc.getStats();
+        let currentPacketsSent = 0;
+        let currentPacketsLost = 0;
+        let currentRtt = 0;
+
+        stats.forEach(report => {
+          if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
+            currentPacketsLost = report.packetsLost || 0;
+            currentRtt = (report.roundTripTime || 0) * 1000;
+          }
+          if (report.type === 'outbound-rtp' && report.kind === 'video') {
+            currentPacketsSent = report.packetsSent || 0;
+          }
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            if (!currentRtt && report.currentRoundTripTime) {
+              currentRtt = report.currentRoundTripTime * 1000;
+            }
+          }
+        });
+
+        if (!peerState.lastStats) {
+          peerState.lastStats = { packetsSent: currentPacketsSent, packetsLost: currentPacketsLost, timestamp: Date.now() };
+          return;
+        }
+
+        const deltaSent = Math.max(0, currentPacketsSent - peerState.lastStats.packetsSent);
+        const deltaLost = Math.max(0, currentPacketsLost - peerState.lastStats.packetsLost);
+        peerState.lastStats = { packetsSent: currentPacketsSent, packetsLost: currentPacketsLost, timestamp: Date.now() };
+
+        const totalDelta = deltaSent + deltaLost;
+        const lossRatePercent = totalDelta > 0 ? (deltaLost / totalDelta) * 100 : 0;
+        const currQ = peerState.currentQuality || 'HIGH';
+
+        // Conservative quality transitions
+        if (lossRatePercent > 10 || currentRtt > 550) {
+          // Severe conditions -> Move to LOW
+          peerState.consecutivePoorSamples = (peerState.consecutivePoorSamples || 0) + 1;
+          peerState.consecutiveHealthySamples = 0;
+          if (peerState.consecutivePoorSamples >= 2 && currQ !== 'LOW') {
+            console.log(`[WEBRTC QUALITY] Guest ${targetSocketId}: ${currQ} → LOW (reason: severe loss ${lossRatePercent.toFixed(1)}%, RTT ${currentRtt.toFixed(0)}ms)`);
+            await this.applySenderQuality(targetSocketId, 'LOW');
+          }
+        } else if (lossRatePercent > 4 || currentRtt > 350) {
+          // Moderate conditions -> Step down one level
+          peerState.consecutivePoorSamples = (peerState.consecutivePoorSamples || 0) + 1;
+          peerState.consecutiveHealthySamples = 0;
+          if (peerState.consecutivePoorSamples >= 3) {
+            const nextQ = currQ === 'HIGH' ? 'MEDIUM' : 'LOW';
+            if (nextQ !== currQ) {
+              console.log(`[WEBRTC QUALITY] Guest ${targetSocketId}: ${currQ} → ${nextQ} (reason: packet loss ${lossRatePercent.toFixed(1)}%, RTT ${currentRtt.toFixed(0)}ms)`);
+              await this.applySenderQuality(targetSocketId, nextQ);
+              peerState.consecutivePoorSamples = 0;
+            }
+          }
+        } else if (lossRatePercent < 2 && currentRtt < 220) {
+          // Healthy conditions -> Require 4 consecutive good samples (10s) before upgrading
+          peerState.consecutiveHealthySamples = (peerState.consecutiveHealthySamples || 0) + 1;
+          peerState.consecutivePoorSamples = 0;
+          if (peerState.consecutiveHealthySamples >= 4) {
+            const nextQ = currQ === 'LOW' ? 'MEDIUM' : (currQ === 'MEDIUM' ? 'HIGH' : 'HIGH');
+            if (nextQ !== currQ) {
+              console.log(`[WEBRTC QUALITY] Guest ${targetSocketId}: ${currQ} → ${nextQ} (reason: network recovered, loss ${lossRatePercent.toFixed(1)}%, RTT ${currentRtt.toFixed(0)}ms)`);
+              await this.applySenderQuality(targetSocketId, nextQ);
+            }
+            peerState.consecutiveHealthySamples = 0;
+          }
+        } else {
+          // Steady conditions
+          peerState.consecutivePoorSamples = 0;
+          peerState.consecutiveHealthySamples = 0;
+        }
+      } catch (e) {}
+    }, 2500);
+  }
+
+  // ==================== 3. GUEST STATS & QUALITY MONITORING ====================
+  startGuestStatsMonitoring(pc) {
+    if (this.guestStatsTimer) {
+      clearInterval(this.guestStatsTimer);
+    }
+
+    this.guestStatsTimer = setInterval(async () => {
+      if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        this.updateConnectionQualityUI('reconnecting', 'Reconnecting...', { rtt: 0, loss: 0, res: '-', fps: 0 });
+        return;
+      }
+
+      try {
+        const stats = await pc.getStats();
+        let packetsLost = 0;
+        let packetsReceived = 0;
+        let currentRtt = 0;
+        let frameWidth = 0;
+        let frameHeight = 0;
+        let fps = 0;
+
+        stats.forEach(report => {
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            packetsLost = report.packetsLost || 0;
+            packetsReceived = report.packetsReceived || 0;
+            frameWidth = report.frameWidth || 0;
+            frameHeight = report.frameHeight || 0;
+            fps = report.framesPerSecond || 0;
+          }
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            if (report.currentRoundTripTime) {
+              currentRtt = report.currentRoundTripTime * 1000;
+            }
+          }
+        });
+
+        if (!this.lastGuestStats) {
+          this.lastGuestStats = { packetsReceived, packetsLost, timestamp: Date.now() };
+          return;
+        }
+
+        const deltaRecv = Math.max(0, packetsReceived - this.lastGuestStats.packetsReceived);
+        const deltaLost = Math.max(0, packetsLost - this.lastGuestStats.packetsLost);
+        this.lastGuestStats = { packetsReceived, packetsLost, timestamp: Date.now() };
+
+        const totalDelta = deltaRecv + deltaLost;
+        const lossPercent = totalDelta > 0 ? (deltaLost / totalDelta) * 100 : 0;
+        const resLabel = frameWidth > 0 ? `${frameWidth}×${frameHeight}` : (this.videoElement && this.videoElement.videoWidth ? `${this.videoElement.videoWidth}×${this.videoElement.videoHeight}` : 'HD');
+
+        let status = 'excellent';
+        let label = '🟢 Excellent';
+
+        if (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'disconnected') {
+          status = 'reconnecting';
+          label = '⚪ Reconnecting';
+        } else if (lossPercent >= 8 || currentRtt >= 450) {
+          status = 'poor';
+          label = '🔴 Poor';
+        } else if (lossPercent >= 3 || currentRtt >= 280) {
+          status = 'fair';
+          label = '🟠 Fair';
+        } else if (lossPercent >= 1 || currentRtt >= 160) {
+          status = 'good';
+          label = '🟡 Good';
+        }
+
+        this.updateConnectionQualityUI(status, label, {
+          rtt: Math.round(currentRtt),
+          loss: lossPercent.toFixed(1),
+          res: resLabel,
+          fps: Math.round(fps)
+        });
+      } catch (e) {}
+    }, 2500);
+  }
+
+  updateConnectionQualityUI(status, label, metrics = {}) {
+    if (this.qualityBadge) {
+      this.qualityBadge.className = `badge-quality quality-${status}`;
+      if (this.qualityLabel) {
+        this.qualityLabel.textContent = metrics.res && metrics.res !== '-' ? metrics.res : label;
+      }
+    }
+
+    const statStatus = document.getElementById('stat-status');
+    const statResolution = document.getElementById('stat-resolution');
+    const statFps = document.getElementById('stat-fps');
+    const statRtt = document.getElementById('stat-rtt');
+    const statLoss = document.getElementById('stat-loss');
+
+    if (statStatus) statStatus.textContent = label;
+    if (statResolution) statResolution.textContent = metrics.res || '-';
+    if (statFps) statFps.textContent = metrics.fps ? `${metrics.fps} FPS` : '-';
+    if (statRtt) statRtt.textContent = metrics.rtt ? `${metrics.rtt} ms` : '-';
+    if (statLoss) statLoss.textContent = `${metrics.loss || '0'}%`;
+  }
+
+  // ==================== 4. DIAGNOSTICS LOGGER ====================
   logPeerState(targetSocketId, actionName, extra = {}) {
     const tag = this.getRoleTag();
     const pc = this.peerConnections.get(targetSocketId);
@@ -160,7 +422,7 @@ class WebRTCManager {
     return diagnostics;
   }
 
-  // ==================== 3. ICE CANDIDATE QUEUE ====================
+  // ==================== 5. ICE CANDIDATE QUEUE ====================
   async processIceCandidateQueue(targetSocketId, pc) {
     const tag = this.getRoleTag();
     const queue = this.iceCandidatesQueue.get(targetSocketId);
@@ -171,38 +433,24 @@ class WebRTCManager {
         const candidate = queue.shift();
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          const candidateType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
-          console.log(`[${tag}] Queued ICE candidate applied for ${targetSocketId}`, {
-            candidateType,
-            sdpMid: candidate.sdpMid,
-            sdpMLineIndex: candidate.sdpMLineIndex
-          });
         } catch (err) {
-          console.warn(`[${tag}] Error adding queued ICE candidate for ${targetSocketId}:`, err);
+          console.warn(`[${tag}] Error adding queued ICE candidate for ${targetSocketId}:`, err.message);
         }
       }
       this.iceCandidatesQueue.delete(targetSocketId);
     }
   }
 
-  // ==================== 4. SOCKET.IO SIGNALING LISTENERS ====================
+  // ==================== 6. SOCKET.IO SIGNALING LISTENERS ====================
   initSocketSignaling() {
-    // Singleton guard to prevent duplicate listener registration
-    if (this.signalingInitialized) {
-      console.warn('[WebRTC] Signaling listeners already initialized. Skipping.');
-      return;
-    }
+    if (this.signalingInitialized) return;
     this.signalingInitialized = true;
-    console.log('[WebRTC] Initializing Socket.IO WebRTC signaling listeners (once)...');
 
     // 5. Host receives guest-requested-stream
     this.socket.on('guest-requested-stream', ({ guestSocketId }) => {
       console.log(`[HOST WEBRTC] Event 5: Host received guest-requested-stream from Guest (${guestSocketId})`);
       if (this.isSharing && this.localStream) {
-        console.log(`[HOST WEBRTC] Active stream available. Checking negotiation lock for Guest (${guestSocketId})...`);
         this.connectToSingleUser(guestSocketId);
-      } else {
-        console.log(`[HOST WEBRTC] Host is not currently screen sharing. Request from Guest (${guestSocketId}) held.`);
       }
     });
 
@@ -213,28 +461,17 @@ class WebRTCManager {
         negotiationId: negotiationId || 'none'
       });
 
-      // 13. Guest creates or reuses RTCPeerConnection
       const pc = this.createPeerConnection(senderSocketId);
 
       try {
-        // 14. Guest sets remote description
-        console.log(`[GUEST WEBRTC] Setting remote description (offer) from Host (${senderSocketId})`);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         this.logPeerState(senderSocketId, 'Guest Remote Description Set');
 
-        // Flush any queued ICE candidates
         await this.processIceCandidateQueue(senderSocketId, pc);
 
-        // 15. Guest creates answer
-        console.log(`[GUEST WEBRTC] Creating answer for Host (${senderSocketId})`);
         const answer = await pc.createAnswer();
-
-        // 16. Guest sets local description
-        console.log(`[GUEST WEBRTC] Setting local description (answer)`);
         await pc.setLocalDescription(answer);
-        this.logPeerState(senderSocketId, 'Guest Local Description Set');
 
-        // 17. Guest sends webrtc-answer with negotiationId
         console.log('[GUEST WEBRTC] ANSWER SENT', {
           peerId: senderSocketId,
           negotiationId: negotiationId || 'none'
@@ -245,6 +482,8 @@ class WebRTCManager {
           answer: pc.localDescription,
           negotiationId
         });
+
+        this.startGuestStatsMonitoring(pc);
       } catch (err) {
         console.error(`[GUEST WEBRTC] Offer Handling Error from ${senderSocketId}:`, err);
         this.logPeerState(senderSocketId, 'Offer Handling Failed', { error: err.message });
@@ -263,12 +502,10 @@ class WebRTCManager {
       });
 
       if (!pc) {
-        console.warn(`[HOST WEBRTC] Received answer from ${senderSocketId} but no RTCPeerConnection exists.`);
         peerState.negotiationInProgress = false;
         return;
       }
 
-      // PREVENT DUPLICATE ANSWERS: Defensive state check
       if (pc.signalingState !== 'have-local-offer') {
         console.warn('[HOST WEBRTC] Ignoring unexpected answer', {
           peerId: senderSocketId,
@@ -278,18 +515,13 @@ class WebRTCManager {
         return;
       }
 
-      // Verify negotiationId matches current offer in flight
       if (peerState.currentNegotiationId && negotiationId && peerState.currentNegotiationId !== negotiationId) {
-        console.warn('[HOST WEBRTC] Ignoring stale answer with negotiationId:', negotiationId, 'current active offer id is:', peerState.currentNegotiationId);
+        console.warn('[HOST WEBRTC] Ignoring stale answer with negotiationId:', negotiationId);
         return;
       }
 
       try {
-        // 19. Host sets remote description
-        console.log(`[HOST WEBRTC] Setting remote description (answer) from Guest (${senderSocketId})`);
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
-
-        // Unlock negotiation upon successful answer application
         peerState.negotiationInProgress = false;
         peerState.currentNegotiationId = null;
 
@@ -300,9 +532,10 @@ class WebRTCManager {
         });
 
         this.logPeerState(senderSocketId, 'Host Remote Description Set (Answer Applied)');
-
-        // Flush any queued ICE candidates on host
         await this.processIceCandidateQueue(senderSocketId, pc);
+
+        // Start Host-side adaptive quality stats loop for this guest
+        this.startHostStatsMonitoring(senderSocketId);
       } catch (err) {
         peerState.negotiationInProgress = false;
         console.error(`[HOST WEBRTC] Answer Handling Error from ${senderSocketId}:`, err);
@@ -310,49 +543,36 @@ class WebRTCManager {
       }
     });
 
-    // 22. ICE candidate received (Host or Guest)
+    // 22. ICE candidate received
     this.socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
       const tag = this.getRoleTag();
       const pc = this.peerConnections.get(senderSocketId);
       if (!candidate) return;
 
-      const candidateType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
-
       if (pc && pc.remoteDescription && pc.remoteDescription.type) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log(`[${tag}] ICE candidate applied directly for ${senderSocketId}`, { candidateType });
         } catch (err) {
-          console.warn(`[${tag}] Failed adding direct ICE candidate from ${senderSocketId}:`, err);
+          console.warn(`[${tag}] Failed adding direct ICE candidate:`, err.message);
         }
       } else {
         if (!this.iceCandidatesQueue.has(senderSocketId)) {
           this.iceCandidatesQueue.set(senderSocketId, []);
         }
         this.iceCandidatesQueue.get(senderSocketId).push(candidate);
-        console.log(`[${tag}] ICE candidate queued for ${senderSocketId} (remote description pending)`, {
-          queueLength: this.iceCandidatesQueue.get(senderSocketId).length
-        });
       }
     });
   }
 
-  // ==================== 5. CREATE / REUSE PEER CONNECTION ====================
+  // ==================== 7. CREATE / REUSE PEER CONNECTION ====================
   createPeerConnection(targetSocketId) {
     const tag = this.getRoleTag();
     const existingPc = this.peerConnections.get(targetSocketId);
 
-    // PREVENT DUPLICATE PEER CONNECTIONS: If a healthy connection already exists, reuse it!
     if (existingPc) {
       if (existingPc.connectionState !== 'closed' && existingPc.connectionState !== 'failed') {
-        console.log(`[${tag}] Reusing existing active RTCPeerConnection for ${targetSocketId}`, {
-          connectionState: existingPc.connectionState,
-          iceConnectionState: existingPc.iceConnectionState,
-          signalingState: existingPc.signalingState
-        });
         return existingPc;
       }
-      console.log(`[${tag}] Closing defunct/failed RTCPeerConnection for ${targetSocketId} before re-creating`);
       this.closeSinglePeerConnection(targetSocketId);
     }
 
@@ -363,34 +583,31 @@ class WebRTCManager {
     const peerState = this.getOrCreatePeerState(targetSocketId);
     peerState.pc = pc;
 
-    console.log(`[${tag}] Active peers:`, Array.from(this.peerConnections.keys()));
-    this.logPeerState(targetSocketId, 'PeerConnection Initialized');
-
     // ICE candidate gathering
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        const cType = event.candidate.type || (event.candidate.candidate ? event.candidate.candidate.split(' ')[7] : 'unknown');
-        console.log(`[${tag}] Local ICE candidate gathered (${cType}) -> sending to ${targetSocketId}`);
-
         this.socket.emit('webrtc-ice-candidate', {
           targetSocketId: targetSocketId,
           candidate: event.candidate
         });
-      } else {
-        console.log(`[${tag}] All local ICE candidates gathered for ${targetSocketId}.`);
       }
     };
 
     // 29. ontrack fires (Guest side)
     pc.ontrack = (event) => {
       console.log(`[GUEST WEBRTC] ontrack: ${event.track.kind}`);
-      console.log('[GUEST WEBRTC] Track details:', {
-        kind: event.track.kind,
-        enabled: event.track.enabled,
-        readyState: event.track.readyState,
-        muted: event.track.muted,
-        id: event.track.id
-      });
+
+      // Track recovery listeners
+      if (event.track.kind === 'video') {
+        event.track.onmute = () => {
+          console.log('[GUEST WEBRTC] Video track temporarily muted/buffering...');
+          if (this.bufferingIndicator) this.bufferingIndicator.classList.remove('hidden');
+        };
+        event.track.onunmute = () => {
+          console.log('[GUEST WEBRTC] Video track unmuted/resumed live!');
+          if (this.bufferingIndicator) this.bufferingIndicator.classList.add('hidden');
+        };
+      }
 
       let remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : null;
 
@@ -404,19 +621,13 @@ class WebRTCManager {
         this.remoteMediaStream = remoteStream;
       }
 
-      console.log('[GUEST WEBRTC] Remote stream ready:', remoteStream);
-      console.log('[GUEST WEBRTC] Remote stream tracks:', {
-        video: remoteStream.getVideoTracks().length,
-        audio: remoteStream.getAudioTracks().length
-      });
-
       this.attachRemoteStreamToGuest(remoteStream);
     };
 
     // Monitor ICE state
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      console.log(`[${tag}] iceConnectionState changed -> ${state} for ${targetSocketId}`);
+      console.log(`[${tag}] iceConnectionState: ${state} for ${targetSocketId}`);
       this.logPeerState(targetSocketId, `iceConnectionState: ${state}`);
 
       if (state === 'failed') {
@@ -428,43 +639,24 @@ class WebRTCManager {
         }
       } else if (state === 'connected' || state === 'completed') {
         console.log(`[${tag}] ✅ WebRTC P2P ICE connected successfully with ${targetSocketId}!`);
+        if (this.bufferingIndicator) this.bufferingIndicator.classList.add('hidden');
       }
     };
 
     // Monitor connection state
     pc.onconnectionstatechange = () => {
       const connState = pc.connectionState;
-      console.log(`[${tag}] connectionState changed -> ${connState} for ${targetSocketId}`);
       this.logPeerState(targetSocketId, `connectionState: ${connState}`);
 
       if (connState === 'failed') {
         const pState = this.getOrCreatePeerState(targetSocketId);
         pState.negotiationInProgress = false;
-      } else if (connState === 'closed') {
-        console.log(`[${tag}] Connection closed with ${targetSocketId}`);
       }
-    };
-
-    pc.onicegatheringstatechange = () => {
-      this.logPeerState(targetSocketId, `iceGatheringState: ${pc.iceGatheringState}`);
-    };
-
-    pc.onsignalingstatechange = () => {
-      this.logPeerState(targetSocketId, `signalingState: ${pc.signalingState}`);
     };
 
     // Attach local tracks if Host is broadcasting
     if (this.isHost && this.localStream) {
-      const videoTracks = this.localStream.getVideoTracks();
-      const audioTracks = this.localStream.getAudioTracks();
-
-      videoTracks.forEach((track) => {
-        console.log(`[HOST WEBRTC] Adding local video track to peer ${targetSocketId}:`, track.id);
-        pc.addTrack(track, this.localStream);
-      });
-
-      audioTracks.forEach((track) => {
-        console.log(`[HOST WEBRTC] Adding local audio track to peer ${targetSocketId}:`, track.id);
+      this.localStream.getTracks().forEach((track) => {
         pc.addTrack(track, this.localStream);
       });
     }
@@ -474,6 +666,13 @@ class WebRTCManager {
 
   closeSinglePeerConnection(targetSocketId) {
     const pc = this.peerConnections.get(targetSocketId);
+    const peerState = this.peerStates.get(targetSocketId);
+
+    if (peerState && peerState.statsTimer) {
+      clearInterval(peerState.statsTimer);
+      peerState.statsTimer = null;
+    }
+
     if (pc) {
       try {
         console.log(`[WebRTC] CLOSE peer ${targetSocketId}`);
@@ -484,36 +683,39 @@ class WebRTCManager {
         pc.onsignalingstatechange = null;
         pc.onicegatheringstatechange = null;
         pc.close();
-      } catch (e) {
-        console.warn(`[WebRTC] Error closing peer connection for ${targetSocketId}:`, e);
-      }
+      } catch (e) {}
       this.peerConnections.delete(targetSocketId);
     }
     this.peerStates.delete(targetSocketId);
     this.iceCandidatesQueue.delete(targetSocketId);
   }
 
-  // ==================== 6. CROSS-BROWSER GETDISPLAYMEDIA ====================
+  // ==================== 8. ADAPTIVE GETDISPLAYMEDIA CAPTURE ====================
   async getDisplayMediaSafe() {
     const isFirefox = navigator.userAgent.toLowerCase().includes('firefox');
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
+    // Default target: 1920x1080 @ 30 FPS maximum (never default to 60fps)
     const videoConstraints = {
-      frameRate: { ideal: 30, max: 60 }
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { ideal: 30, max: 30 }
     };
 
     if (!isFirefox && !isSafari) {
       videoConstraints.displaySurface = 'browser';
     }
 
+    // High quality direct movie/tab audio without artificial voice processing
     const audioConstraints = (isFirefox || isSafari) ? true : {
-      echoCancellation: true,
-      noiseSuppression: true,
-      sampleRate: 44100
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: 48000
     };
 
     try {
-      console.log('[HOST WEBRTC] Requesting getDisplayMedia with video + audio...');
+      console.log('[HOST WEBRTC] Requesting getDisplayMedia with video (max 30fps) + clean tab audio...');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: videoConstraints,
         audio: audioConstraints
@@ -533,7 +735,7 @@ class WebRTCManager {
     }
   }
 
-  // ==================== 7. START / STOP SCREEN SHARE (HOST) ====================
+  // ==================== 9. START / STOP SCREEN SHARE (HOST) ====================
   async startScreenShare(userList = []) {
     this.isHost = true;
 
@@ -552,20 +754,21 @@ class WebRTCManager {
       const videoTracks = stream.getVideoTracks();
       const audioTracks = stream.getAudioTracks();
 
-      // VERIFY STREAM TRACKS
+      // PART 2: Determine & Log Capture Capabilities
+      if (videoTracks.length > 0) {
+        const settings = videoTracks[0].getSettings ? videoTracks[0].getSettings() : {};
+        console.log('[HOST WEBRTC] Capture settings', {
+          width: settings.width,
+          height: settings.height,
+          frameRate: settings.frameRate,
+          displaySurface: settings.displaySurface,
+          aspectRatio: settings.aspectRatio
+        });
+      }
+
       console.log('[HOST WEBRTC] Captured stream', {
         videoTracks: videoTracks.length,
         audioTracks: audioTracks.length
-      });
-
-      stream.getTracks().forEach((track, idx) => {
-        console.log(`[HOST WEBRTC] Captured track #${idx + 1}`, {
-          kind: track.kind,
-          enabled: track.enabled,
-          readyState: track.readyState,
-          muted: track.muted,
-          settings: track.getSettings ? track.getSettings() : {}
-        });
       });
 
       if (audioTracks.length > 0) {
@@ -574,14 +777,12 @@ class WebRTCManager {
         }
       } else {
         if (typeof showToast === 'function') {
-          showToast('🖥️ Video captured. Note: Tab audio was not selected in browser picker.');
+          showToast('🖥️ Video captured. Tip: Share a Chrome Tab with audio checked for sound.');
         }
       }
 
-      // Host local preview (Muted)
       this.attachLocalStreamToHost(stream);
 
-      // Handle native stop share bar
       if (videoTracks.length > 0) {
         videoTracks[0].onended = () => {
           console.log('[HOST WEBRTC] Host stopped sharing via browser bar');
@@ -589,7 +790,7 @@ class WebRTCManager {
         };
       }
 
-      // Connect to all active participants in room
+      // Connect to all active participants
       console.log(`[HOST WEBRTC] Initiating stream offer to ${userList.length} participant(s)...`);
       for (const user of userList) {
         if (user.socketId && user.socketId !== this.socket.id) {
@@ -612,47 +813,27 @@ class WebRTCManager {
     }
   }
 
-  // Host creates connection with Negotiation Lock and sends Offer
   async connectToSingleUser(targetSocketId) {
-    if (!this.localStream) {
-      console.warn(`[HOST WEBRTC] Cannot connect to ${targetSocketId}: localStream is null`);
-      return;
-    }
+    if (!this.localStream) return;
 
     const tracks = this.localStream.getTracks();
-    if (tracks.length === 0) {
-      console.warn(`[HOST WEBRTC] Cannot connect to ${targetSocketId}: localStream has 0 tracks`);
-      return;
-    }
+    if (tracks.length === 0) return;
 
-    // NEGOTIATION LOCK CHECK: Prevent simultaneous offers to same peer
     const peerState = this.getOrCreatePeerState(targetSocketId);
     if (peerState.negotiationInProgress) {
-      console.warn('[HOST WEBRTC] Negotiation already in progress for peer:', targetSocketId, {
-        activeNegotiationId: peerState.currentNegotiationId
-      });
+      console.warn('[HOST WEBRTC] Negotiation already in progress for peer:', targetSocketId);
       return;
     }
 
-    // Create or reuse RTCPeerConnection
     const pc = this.createPeerConnection(targetSocketId);
 
-    // If existing connection is already stable and active, check if renegotiation is needed
     if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer') {
-      console.warn(`[HOST WEBRTC] Cannot create offer for ${targetSocketId}: signalingState is ${pc.signalingState}`);
       return;
     }
 
-    // Generate unique negotiationId and acquire lock
     const negotiationId = this.generateNegotiationId();
     peerState.negotiationInProgress = true;
     peerState.currentNegotiationId = negotiationId;
-
-    // VERIFY RTCPeerConnection TRACKS
-    console.log('[HOST WEBRTC] Senders before offer', pc.getSenders().map(sender => ({
-      kind: sender.track?.kind,
-      readyState: sender.track?.readyState
-    })));
 
     try {
       console.log(`[HOST WEBRTC] Creating offer for Guest (${targetSocketId}) [negId: ${negotiationId}]`);
@@ -678,7 +859,6 @@ class WebRTCManager {
       peerState.negotiationInProgress = false;
       peerState.currentNegotiationId = null;
       console.error(`[HOST WEBRTC] Offer Generation Error for ${targetSocketId}:`, err);
-      this.logPeerState(targetSocketId, 'Offer Generation Failed', { error: err.message });
     }
   }
 
@@ -704,65 +884,239 @@ class WebRTCManager {
     console.log('[HOST WEBRTC] Screen sharing stopped and peer connections closed.');
   }
 
-  // ==================== 8. VIDEO DISPLAY & AUTOPLAY ====================
+  // ==================== 10. TOUCH CONTROLS, FULLSCREEN & PIP ====================
+  initTouchAndUIControls() {
+    const stageContainer = document.getElementById('cinema-viewport') || document.getElementById('viewport-screenshare');
+
+    // Tap/Hover auto-hide controls management
+    const showControlsTemporarily = () => {
+      if (!this.touchOverlay) return;
+      this.touchOverlay.classList.add('active');
+
+      if (this.controlsHideTimeout) clearTimeout(this.controlsHideTimeout);
+      this.controlsHideTimeout = setTimeout(() => {
+        if (this.touchOverlay && !this.touchOverlay.matches(':hover')) {
+          this.touchOverlay.classList.remove('active');
+        }
+      }, 3000);
+    };
+
+    if (stageContainer) {
+      stageContainer.addEventListener('mousemove', showControlsTemporarily);
+      stageContainer.addEventListener('touchstart', (e) => {
+        // Toggle controls visibility on touch without disrupting playback
+        if (this.touchOverlay && !this.touchOverlay.classList.contains('active')) {
+          this.touchOverlay.classList.add('active');
+          showControlsTemporarily();
+        }
+      }, { passive: true });
+    }
+
+    // Fullscreen Toggle Button
+    if (this.btnFullscreen) {
+      this.btnFullscreen.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleFullscreen(stageContainer || document.documentElement);
+      });
+    }
+
+    // Picture-in-Picture Button
+    if (this.btnPip) {
+      if (document.pictureInPictureEnabled && this.videoElement && typeof this.videoElement.requestPictureInPicture === 'function') {
+        this.btnPip.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try {
+            if (document.pictureInPictureElement) {
+              await document.exitPictureInPicture();
+            } else if (this.videoElement) {
+              await this.videoElement.requestPictureInPicture();
+            }
+          } catch (err) {
+            console.warn('[PiP] Picture-in-picture error:', err.message);
+          }
+        });
+      } else {
+        this.btnPip.style.display = 'none'; // Hide if unsupported
+      }
+    }
+
+    // Audio Mute/Unmute Toggle
+    if (this.btnAudioToggle) {
+      this.btnAudioToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleMute();
+      });
+    }
+
+    // Center CTA (Autoplay Unlock)
+    if (this.centerCta) {
+      this.centerCta.addEventListener('click', () => {
+        this.unlockAudioPlayback();
+      });
+    }
+
+    // Quality Badge Click (Toggle Stats Tooltip)
+    if (this.qualityBadge) {
+      this.qualityBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.qualityStatsPopup) {
+          this.qualityStatsPopup.classList.toggle('hidden');
+        }
+      });
+    }
+
+    // Close stats popup on outside click
+    document.addEventListener('click', (e) => {
+      if (this.qualityStatsPopup && !this.qualityStatsPopup.contains(e.target) && e.target !== this.qualityBadge) {
+        this.qualityStatsPopup.classList.add('hidden');
+      }
+    });
+
+    // Fullscreen change listener
+    const onFullscreenChange = () => {
+      const isFull = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+      if (this.iconFullscreen) {
+        this.iconFullscreen.textContent = isFull ? '🗗' : '⛶';
+      }
+      if (stageContainer) {
+        stageContainer.classList.toggle('is-fullscreen', isFull);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+  }
+
+  async toggleFullscreen(element) {
+    try {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (element.requestFullscreen) {
+          await element.requestFullscreen();
+        } else if (element.webkitRequestFullscreen) {
+          await element.webkitRequestFullscreen();
+        }
+
+        // Lock to landscape on mobile where supported
+        if (typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.lock === 'function') {
+          screen.orientation.lock('landscape').catch(() => {});
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        }
+      }
+    } catch (e) {
+      console.warn('[Fullscreen] Notice:', e.message);
+    }
+  }
+
+  toggleMute() {
+    if (!this.videoElement) return;
+    this.videoElement.muted = !this.videoElement.muted;
+    if (this.iconAudio) {
+      this.iconAudio.textContent = this.videoElement.muted ? '🔇' : '🔊';
+    }
+    if (typeof showToast === 'function') {
+      showToast(this.videoElement.muted ? '🔇 Audio muted' : '🔊 Audio unmuted');
+    }
+  }
+
+  unlockAudioPlayback() {
+    if (!this.videoElement) return;
+    this.videoElement.muted = false;
+    this.videoElement.play().then(() => {
+      if (this.centerCta) this.centerCta.classList.add('hidden');
+      if (this.iconAudio) this.iconAudio.textContent = '🔊';
+      if (typeof showToast === 'function') showToast('🔊 Live theatre sound enabled!');
+    }).catch(e => {
+      console.warn('[Audio Unlock] Playback retry error:', e.message);
+    });
+  }
+
+  // ==================== 11. NETWORK CHANGE LISTENERS ====================
+  initNetworkListeners() {
+    window.addEventListener('online', () => {
+      console.log('[Network] Browser is online. Verifying ICE connections...');
+      if (typeof showToast === 'function') showToast('🌐 Network connection restored');
+      this.peerConnections.forEach((pc) => {
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          if (typeof pc.restartIce === 'function') pc.restartIce();
+        }
+      });
+    });
+
+    window.addEventListener('offline', () => {
+      console.warn('[Network] Browser is offline.');
+      if (typeof showToast === 'function') showToast('⚠️ Network connection dropped. Reconnecting...');
+      if (this.bufferingIndicator) this.bufferingIndicator.classList.remove('hidden');
+    });
+  }
+
+  // ==================== 12. VIDEO ATTACHMENT & RECOVERY ====================
   attachLocalStreamToHost(stream) {
     if (this.videoElement) {
       this.videoElement.srcObject = stream;
       this.videoElement.style.display = 'block';
-      this.videoElement.muted = true; // Host muted locally
+      this.videoElement.muted = true; // Host muted locally to prevent echo
 
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
-        playPromise.catch(e => console.warn('[HOST WEBRTC] Local video playback notice:', e));
+        playPromise.catch(() => {});
       }
     }
 
     if (this.placeholderEl) {
       this.placeholderEl.style.display = 'none';
     }
+    if (this.touchOverlay) {
+      this.touchOverlay.style.display = 'flex';
+    }
   }
 
-  // Remote stream attached to video element (Guest side)
   attachRemoteStreamToGuest(remoteStream) {
     if (this.videoElement) {
       if (this.videoElement.srcObject !== remoteStream) {
-        console.log('[GUEST WEBRTC] Attaching remote stream');
+        console.log('[GUEST WEBRTC] Attaching remote stream to video element');
         this.videoElement.srcObject = remoteStream;
         this.videoElement.style.display = 'block';
         this.videoElement.muted = false;
-        console.log('[GUEST WEBRTC] Remote stream attached');
 
         const playPromise = this.videoElement.play();
         if (playPromise !== undefined) {
           playPromise
             .then(() => {
-              console.log('[GUEST WEBRTC] Remote video playing');
+              console.log('[GUEST WEBRTC] Remote video playing with sound');
+              if (this.centerCta) this.centerCta.classList.add('hidden');
+              if (this.iconAudio) this.iconAudio.textContent = '🔊';
             })
             .catch((err) => {
-              console.error('[GUEST WEBRTC] Video play failed', err);
-              console.log('[GUEST WEBRTC] Attempting muted fallback playback due to autoplay policy...');
+              console.warn('[GUEST WEBRTC] Unmuted playback blocked by browser policy. Falling back to muted with tap prompt:', err.message);
               this.videoElement.muted = true;
-              this.videoElement.play()
-                .then(() => {
-                  console.log('[GUEST WEBRTC] Remote video playing (muted)');
-                  if (typeof showToast === 'function') {
-                    showToast('🔊 Click the theatre stage to unmute live stream audio!');
-                  }
-                })
-                .catch(e => console.error('[GUEST WEBRTC] Muted playback also failed', e));
+              this.videoElement.play().then(() => {
+                if (this.centerCta) this.centerCta.classList.remove('hidden');
+                if (this.iconAudio) this.iconAudio.textContent = '🔇';
+              }).catch(() => {});
             });
         }
       }
-    } else {
-      console.error('[GUEST WEBRTC] Error: videoElement (#remote-stream-video) not found in DOM!');
     }
 
     if (this.placeholderEl) {
       this.placeholderEl.style.display = 'none';
     }
+    if (this.touchOverlay) {
+      this.touchOverlay.style.display = 'flex';
+    }
   }
 
   clearVideo() {
+    if (this.guestStatsTimer) {
+      clearInterval(this.guestStatsTimer);
+      this.guestStatsTimer = null;
+    }
+
     if (this.videoElement) {
       this.videoElement.srcObject = null;
       this.videoElement.style.display = 'none';
@@ -770,6 +1124,15 @@ class WebRTCManager {
 
     if (this.placeholderEl) {
       this.placeholderEl.style.display = 'flex';
+    }
+    if (this.touchOverlay) {
+      this.touchOverlay.style.display = 'none';
+    }
+    if (this.centerCta) {
+      this.centerCta.classList.add('hidden');
+    }
+    if (this.bufferingIndicator) {
+      this.bufferingIndicator.classList.add('hidden');
     }
   }
 }
