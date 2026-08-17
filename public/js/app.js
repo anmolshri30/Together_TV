@@ -279,10 +279,8 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
       document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
 
-      setTimeout(() => {
-        console.log('[GUEST WEBRTC] Event 2: Guest sending request-host-stream to server');
-        socket.emit('request-host-stream');
-      }, 500);
+      console.log(`[GUEST WEBRTC] [${new Date().toISOString()}] Event 2: request-host-stream SENT (socket: ${socket.id}, room: ${roomCode})`);
+      socket.emit('request-host-stream');
     } else {
       document.getElementById('placeholder-title').textContent = 'Host Screen Share Stage';
       document.getElementById('placeholder-desc').textContent = 'Host has not started sharing yet.';
@@ -335,9 +333,9 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAudienceList(users);
     addSystemChatMessage(`🎟️ ${user.username} entered the theatre!`);
 
-    // If host is actively sharing, immediately connect to the newly joined guest
+    // If host is actively sharing, connect to newly joined guest
     if (isHost && webrtc.isSharing && user.socketId) {
-      console.log(`[HOST WEBRTC] New guest ${user.socketId} entered during active share. Initiating WebRTC offer...`);
+      console.log(`[HOST WEBRTC] New guest ${user.socketId} joined while sharing. Initiating connection...`);
       webrtc.connectToSingleUser(user.socketId);
     }
     updateDebugPanel();
@@ -357,10 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (isSharing) {
         document.getElementById('placeholder-title').textContent = 'Live Host Screen Stream';
         document.getElementById('placeholder-desc').textContent = 'Connecting low-latency stream...';
-
-        // 2. Guest requests stream from host
-        console.log('[GUEST WEBRTC] Event 2: Host started screen share. Guest sending request-host-stream...');
-        socket.emit('request-host-stream');
       } else {
         document.getElementById('placeholder-title').textContent = 'Host Screen Share Stage';
         document.getElementById('placeholder-desc').textContent = 'Host has not started sharing yet.';

@@ -238,7 +238,8 @@ io.on('connection', (socket) => {
   // 3 & 4. Server receives request-host-stream and forwards guest-requested-stream to Host
   socket.on('request-host-stream', () => {
     const code = socket.roomCode;
-    console.log(`[SERVER WEBRTC] Event 3: Server received request-host-stream from Guest (${socket.id}) for Room (${code || 'none'})`);
+    const ts = new Date().toISOString();
+    console.log(`[SERVER WEBRTC] [${ts}] Event 3: request-host-stream RECEIVED from Guest (${socket.id}) in Room (${code || 'none'})`);
 
     if (!code) {
       console.warn(`[SERVER WEBRTC] Cannot route request-host-stream: Socket ${socket.id} has no roomCode.`);
@@ -250,29 +251,34 @@ io.on('connection', (socket) => {
       return;
     }
 
-    console.log(`[SERVER WEBRTC] Event 4: Server sending guest-requested-stream to Host (${room.hostSocketId}) from Guest (${socket.id})`);
+    console.log(`[SERVER WEBRTC] [${ts}] Event 4: guest-requested-stream SENT to Host (${room.hostSocketId}) for Guest (${socket.id})`);
     io.to(room.hostSocketId).emit('guest-requested-stream', {
-      guestSocketId: socket.id
+      guestSocketId: socket.id,
+      timestamp: Date.now()
     });
   });
 
   // 11. Host -> Guest Offer
-  socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
+  socket.on('webrtc-offer', ({ targetSocketId, offer, negotiationId }) => {
     if (!targetSocketId || !offer) return;
-    console.log(`[SERVER WEBRTC] Event 11: Relaying webrtc-offer from Host (${socket.id}) to Guest (${targetSocketId})`);
+    const ts = new Date().toISOString();
+    console.log(`[SERVER WEBRTC] [${ts}] Event 11: Relaying webrtc-offer from Host (${socket.id}) to Guest (${targetSocketId}) [negId: ${negotiationId || 'none'}]`);
     io.to(targetSocketId).emit('webrtc-offer', {
       senderSocketId: socket.id,
-      offer
+      offer,
+      negotiationId
     });
   });
 
   // 17. Guest -> Host Answer
-  socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
+  socket.on('webrtc-answer', ({ targetSocketId, answer, negotiationId }) => {
     if (!targetSocketId || !answer) return;
-    console.log(`[SERVER WEBRTC] Event 17: Relaying webrtc-answer from Guest (${socket.id}) to Host (${targetSocketId})`);
+    const ts = new Date().toISOString();
+    console.log(`[SERVER WEBRTC] [${ts}] Event 17: Relaying webrtc-answer from Guest (${socket.id}) to Host (${targetSocketId}) [negId: ${negotiationId || 'none'}]`);
     io.to(targetSocketId).emit('webrtc-answer', {
       senderSocketId: socket.id,
-      answer
+      answer,
+      negotiationId
     });
   });
 
@@ -280,7 +286,6 @@ io.on('connection', (socket) => {
   socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
     if (!targetSocketId || !candidate) return;
     const cType = candidate.type || (candidate.candidate ? candidate.candidate.split(' ')[7] : 'unknown');
-    console.log(`[SERVER WEBRTC] Event 21: Relaying ICE candidate (${cType}) from (${socket.id}) to (${targetSocketId})`);
     io.to(targetSocketId).emit('webrtc-ice-candidate', {
       senderSocketId: socket.id,
       candidate
